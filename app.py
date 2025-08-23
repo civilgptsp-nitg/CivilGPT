@@ -57,7 +57,7 @@ materials_df, emissions_df = load_data()
 # Helper Functions
 # ---------------------------
 def estimate_water_demand(slump, agg_size, use_sp=False):
-    """Estimate water demand based on slump and aggregate size"""
+    """Estimate water demand based on slump and aggregate size."""
     base = 180  # baseline water demand (kg/m3) for 100mm slump, 20mm agg
     adj = (slump - 100) * 0.3
     if agg_size == 10:
@@ -70,7 +70,7 @@ def estimate_water_demand(slump, agg_size, use_sp=False):
     return max(demand, 140)
 
 def evaluate_mix(cement, scm, water, agg, emissions_df):
-    """Calculate CO2 footprint for a given mix"""
+    """Calculate CO2 footprint table for a given mix dicts."""
     mix = cement.copy()
     mix.update(scm)
     mix.update(water)
@@ -82,15 +82,16 @@ def evaluate_mix(cement, scm, water, agg, emissions_df):
     return df
 
 def generate_mix(grade, exposure, slump, agg_size, emissions, use_sp=True):
-    """Rule-based optimizer for sustainable mix"""
+    """Rule-based optimizer for sustainable mix. Returns (mix_df, meta)."""
     fck = GRADE_STRENGTH[grade]
     w_b_limit = EXPOSURE_WB_LIMITS[exposure]
     min_cement = EXPOSURE_MIN_CEMENT[exposure]
 
     best_mix = None
+    best_meta = None
     best_co2 = float("inf")
 
-    # Iterate over candidate mixes
+    # Candidate search
     for wb in np.linspace(0.35, w_b_limit, 6):  # candidate w/b ratios
         for flyash_frac in [0.0, 0.2, 0.3]:
             for ggbs_frac in [0.0, 0.3, 0.5]:
@@ -103,7 +104,7 @@ def generate_mix(grade, exposure, slump, agg_size, emissions, use_sp=True):
                 flyash = cementitious * flyash_frac
                 ggbs = cementitious * ggbs_frac
 
-                # Check density balance
+                # Simple aggregate balance (kept constant for stability)
                 fine = 650
                 coarse = 1150
                 sp = 2.5 if use_sp else 0.0
@@ -114,16 +115,30 @@ def generate_mix(grade, exposure, slump, agg_size, emissions, use_sp=True):
                 agg_dict = {"M-Sand": fine, "20mm Coarse Aggregate": coarse}
 
                 df = evaluate_mix(cement_dict, scm_dict, water_dict, agg_dict, emissions)
-
                 total_co2 = df["CO2_Emissions (kg/m3)"].sum()
+
                 if total_co2 < best_co2:
                     best_co2 = total_co2
                     best_mix = df.copy()
+                    best_meta = {
+                        "grade": grade,
+                        "exposure": exposure,
+                        "w_b": float(wb),
+                        "cementitious": float(cementitious),
+                        "cement": float(cement),
+                        "flyash": float(flyash),
+                        "ggbs": float(ggbs),
+                        "water": float(water),
+                        "sp": float(sp),
+                        "fine": float(fine),
+                        "coarse": float(coarse),
+                        "scm_total_frac": float(flyash_frac + ggbs_frac),
+                    }
 
-    return best_mix
+    return best_mix, best_meta
 
 def generate_baseline(grade, exposure, slump, agg_size, emissions, baseline_type="OPC", use_sp=True):
-    """Generate baseline mix (100% OPC or 100% PPC)"""
+    """Generate baseline mix (100% OPC or 100% PPC). Returns (mix_df, meta)."""
     w_b_limit = EXPOSURE_WB_LIMITS[exposure]
     min_cement = EXPOSURE_MIN_CEMENT[exposure]
 
@@ -132,7 +147,7 @@ def generate_baseline(grade, exposure, slump, agg_size, emissions, baseline_type
 
     if baseline_type == "OPC":
         cement_dict = {"OPC 43": cementitious}
-    else:  # PPC
+    else:
         cement_dict = {"PPC": cementitious}
 
     scm_dict = {"Fly Ash": 0.0, "GGBS": 0.0}
@@ -140,7 +155,49 @@ def generate_baseline(grade, exposure, slump, agg_size, emissions, baseline_type
     agg_dict = {"M-Sand": 650, "20mm Coarse Aggregate": 1150}
 
     df = evaluate_mix(cement_dict, scm_dict, water_dict, agg_dict, emissions)
-    return df
+    meta = {
+        "grade": grade,
+        "exposure": exposure,
+        "w_b": float(w_b_limit),  # baseline at limit
+        "cementitious": float(cementitious),
+        "cement": float(cementitious),  # all cementitious is cement
+        "flyash": 0.0,
+        "ggbs": 0.0,
+        "water": float(water),
+        "sp": float(water_dict.get("PCE Superplasticizer", 0.0)),
+        "fine": 650.0,
+        "coarse": 1150.0,
+        "scm_total_frac": 0.0,
+        "baseline_type": baseline_type,
+    }
+    return df, meta
+
+def compliance_checks(mix_df, meta, exposure):
+    """Return a dictionary of compliance checks and derived metrics."""
+    checks = {}
+    # IS-style limits
+    checks["W/B limit"] = meta["w_b"] <= EXPOSURE_WB_LIMITS[exposure]
+    checks["Min cementitious"] = meta["cementitious"] >= EXPOSURE_MIN_CEMENT[exposure]
+    checks["SCM cap (≤ 50%)"] = meta.get("scm_total_frac", 0.0) <= 0.50
+
+    # Total mass sanity (fresh concrete unit weight 2200–2600 kg/m³ typical)
+    total_mass = float(mix_df["Quantity (kg/m3)"].sum())
+    checks["Unit weight 2200–2600 kg/m³"] = 2200.0 <= total_mass <= 2600.0
+
+    derived = {
+        "w/b used": round(meta["w_b"], 3),
+        "cementitious (kg/m³)": round(meta["cementitious"], 1),
+        "SCM % of cementitious": round(100 * meta.get("scm_total_frac", 0.0), 1),
+        "total mass (kg/m³)": round(total_mass, 1),
+        "water (kg/m³)": round(meta["water"], 1),
+        "cement (kg/m³)": round(meta["cement"], 1),
+        "fly ash (kg/m³)": round(meta.get("flyash", 0.0), 1),
+        "GGBS (kg/m³)": round(meta.get("ggbs", 0.0), 1),
+        "fine agg (kg/m³)": round(meta["fine"], 1),
+        "coarse agg (kg/m³)": round(meta["coarse"], 1),
+        "SP (kg/m³)": round(meta["sp"], 2),
+    }
+    return checks, derived
 
 # ---------------------------
 # UI
@@ -151,7 +208,7 @@ st.subheader("AI-Powered Sustainable Concrete Mix Designer")
 st.markdown(
     """
     CivilGPT generates **eco-optimized, IS-code-aligned concrete mix designs**.  
-    It balances **strength, workability, durability, and CO₂ footprint**.  
+    It balances **strength, workability, durability, and CO₂ footprint**.
     """
 )
 
@@ -169,8 +226,8 @@ if st.button("Generate Sustainable Mix"):
     if materials_df is None or emissions_df is None:
         st.error("Data files missing. Please upload CSVs to repo.")
     else:
-        mix_df = generate_mix(grade, exposure, slump, agg_size, emissions_df, use_sp)
-        baseline_df = generate_baseline(grade, exposure, slump, agg_size, emissions_df, baseline_choice, use_sp)
+        mix_df, mix_meta = generate_mix(grade, exposure, slump, agg_size, emissions_df, use_sp)
+        baseline_df, base_meta = generate_baseline(grade, exposure, slump, agg_size, emissions_df, baseline_choice, use_sp)
 
         if mix_df is not None and baseline_df is not None:
             st.success(f"Sustainable Mix generated for {grade} under {exposure} exposure.")
@@ -191,20 +248,45 @@ if st.button("Generate Sustainable Mix"):
             col2.metric(f"🏗️ {baseline_choice} Baseline CO₂", f"{total_co2_baseline:.1f} kg/m³")
             col3.metric("📉 % Reduction", f"{reduction:.1f}%")
 
-            # Downloads
-            csv = mix_df.to_csv(index=False).encode("utf-8")
+            # Compliance & Assumptions
+            st.markdown("### ✅ Assumptions & Compliance")
+            opt_checks, opt_derived = compliance_checks(mix_df, mix_meta, exposure)
+            base_checks, base_derived = compliance_checks(baseline_df, base_meta, exposure)
+
+            with st.expander("Optimized Mix — Assumptions & Checks", expanded=False):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**Derived Parameters**")
+                    st.json(opt_derived)
+                with c2:
+                    st.markdown("**Compliance**")
+                    for k, v in opt_checks.items():
+                        st.write(f"• {k}: {'✅' if v else '❌'}")
+
+            with st.expander(f"{baseline_choice} Baseline — Assumptions & Checks", expanded=False):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**Derived Parameters**")
+                    st.json(base_derived)
+                with c2:
+                    st.markdown("**Compliance**")
+                    for k, v in base_checks.items():
+                        st.write(f"• {k}: {'✅' if v else '❌'}")
+
+            # Downloads (CSV)
+            csv_opt = mix_df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="📥 Download Optimized Mix (CSV)",
-                data=csv,
-                file_name=f"CivilGPT_{grade}_mix.csv",
+                data=csv_opt,
+                file_name=f"CivilGPT_{grade}_optimized.csv",
                 mime="text/csv",
             )
 
-            csv_baseline = baseline_df.to_csv(index=False).encode("utf-8")
+            csv_base = baseline_df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="📥 Download Baseline Mix (CSV)",
-                data=csv_baseline,
-                file_name=f"CivilGPT_{grade}_baseline.csv",
+                data=csv_base,
+                file_name=f"CivilGPT_{grade}_{baseline_choice}_baseline.csv",
                 mime="text/csv",
             )
 
@@ -215,4 +297,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.caption("CivilGPT v1.1 | Sustainable Construction AI Prototype")
+st.caption("CivilGPT v1.2 | Sustainable Construction AI Prototype (Compliance View)")
