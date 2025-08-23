@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import json
-import os
 
 # ---------------------------
 # App Config
@@ -83,7 +81,7 @@ def evaluate_mix(cement, scm, water, agg, emissions_df):
     df["CO2_Emissions (kg/m3)"] = df["Quantity (kg/m3)"] * df["CO2_Factor(kg_CO2_per_kg)"]
     return df
 
-def generate_mix(grade, exposure, slump, agg_size, materials, emissions, use_sp=True):
+def generate_mix(grade, exposure, slump, agg_size, emissions, use_sp=True):
     """Rule-based optimizer for sustainable mix"""
     fck = GRADE_STRENGTH[grade]
     w_b_limit = EXPOSURE_WB_LIMITS[exposure]
@@ -124,6 +122,26 @@ def generate_mix(grade, exposure, slump, agg_size, materials, emissions, use_sp=
 
     return best_mix
 
+def generate_baseline(grade, exposure, slump, agg_size, emissions, baseline_type="OPC", use_sp=True):
+    """Generate baseline mix (100% OPC or 100% PPC)"""
+    w_b_limit = EXPOSURE_WB_LIMITS[exposure]
+    min_cement = EXPOSURE_MIN_CEMENT[exposure]
+
+    water = estimate_water_demand(slump, agg_size, use_sp)
+    cementitious = max(water / w_b_limit, min_cement)
+
+    if baseline_type == "OPC":
+        cement_dict = {"OPC 43": cementitious}
+    else:  # PPC
+        cement_dict = {"PPC": cementitious}
+
+    scm_dict = {"Fly Ash": 0.0, "GGBS": 0.0}
+    water_dict = {"Water": water, "PCE Superplasticizer": 2.5 if use_sp else 0.0}
+    agg_dict = {"M-Sand": 650, "20mm Coarse Aggregate": 1150}
+
+    df = evaluate_mix(cement_dict, scm_dict, water_dict, agg_dict, emissions)
+    return df
+
 # ---------------------------
 # UI
 # ---------------------------
@@ -144,37 +162,52 @@ exposure = st.sidebar.selectbox("Exposure Condition", list(EXPOSURE_WB_LIMITS.ke
 slump = st.sidebar.slider("Target Slump (mm)", 50, 200, 100)
 agg_size = st.sidebar.selectbox("Max Aggregate Size (mm)", [10, 20, 40])
 use_sp = st.sidebar.checkbox("Use Superplasticizer", True)
+baseline_choice = st.sidebar.radio("Baseline Mix Type", ["OPC", "PPC"])
 
 # Main Output
 if st.button("Generate Sustainable Mix"):
     if materials_df is None or emissions_df is None:
         st.error("Data files missing. Please upload CSVs to repo.")
     else:
-        mix_df = generate_mix(grade, exposure, slump, agg_size, materials_df, emissions_df, use_sp)
-        if mix_df is not None:
+        mix_df = generate_mix(grade, exposure, slump, agg_size, emissions_df, use_sp)
+        baseline_df = generate_baseline(grade, exposure, slump, agg_size, emissions_df, baseline_choice, use_sp)
+
+        if mix_df is not None and baseline_df is not None:
             st.success(f"Sustainable Mix generated for {grade} under {exposure} exposure.")
+
+            st.subheader("Optimized Sustainable Mix")
             st.dataframe(mix_df, use_container_width=True)
 
+            st.subheader(f"{baseline_choice} Baseline Mix")
+            st.dataframe(baseline_df, use_container_width=True)
+
             # KPI
-            total_co2 = mix_df["CO2_Emissions (kg/m3)"].sum()
-            st.metric("🌱 Estimated CO₂ Footprint", f"{total_co2:.1f} kg/m³")
+            total_co2_opt = mix_df["CO2_Emissions (kg/m3)"].sum()
+            total_co2_baseline = baseline_df["CO2_Emissions (kg/m3)"].sum()
+            reduction = (total_co2_baseline - total_co2_opt) / total_co2_baseline * 100
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("🌱 Optimized Mix CO₂", f"{total_co2_opt:.1f} kg/m³")
+            col2.metric(f"🏗️ {baseline_choice} Baseline CO₂", f"{total_co2_baseline:.1f} kg/m³")
+            col3.metric("📉 % Reduction", f"{reduction:.1f}%")
 
             # Downloads
             csv = mix_df.to_csv(index=False).encode("utf-8")
             st.download_button(
-                label="📥 Download Mix as CSV",
+                label="📥 Download Optimized Mix (CSV)",
                 data=csv,
                 file_name=f"CivilGPT_{grade}_mix.csv",
                 mime="text/csv",
             )
 
-            json_data = mix_df.to_json(orient="records", indent=2)
+            csv_baseline = baseline_df.to_csv(index=False).encode("utf-8")
             st.download_button(
-                label="📥 Download Mix as JSON",
-                data=json_data,
-                file_name=f"CivilGPT_{grade}_mix.json",
-                mime="application/json",
+                label="📥 Download Baseline Mix (CSV)",
+                data=csv_baseline,
+                file_name=f"CivilGPT_{grade}_baseline.csv",
+                mime="text/csv",
             )
+
         else:
             st.error("No feasible mix found under given constraints.")
 else:
@@ -182,4 +215,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.caption("CivilGPT v1.0 | Sustainable Construction AI Prototype")
+st.caption("CivilGPT v1.1 | Sustainable Construction AI Prototype")
