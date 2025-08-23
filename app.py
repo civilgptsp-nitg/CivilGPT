@@ -1,13 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-
-# Import IS rules & helpers
-from is_rules import (
-    EXPOSURE_WB_LIMITS, EXPOSURE_MIN_CEMENT, GRADE_STRENGTH,
-    water_for_slump, aggregate_correction,
-    sieve_check_fa, sieve_check_ca20
-)
+import matplotlib.pyplot as plt
+from io import BytesIO
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
 
 # =========================
 # App Config
@@ -17,6 +14,52 @@ st.set_page_config(
     page_icon="🧱",
     layout="wide"
 )
+
+# =========================
+# IS-style Rules & Tables
+# =========================
+EXPOSURE_WB_LIMITS = {
+    "Mild": 0.60,
+    "Moderate": 0.55,
+    "Severe": 0.50,
+    "Very Severe": 0.45,
+    "Marine": 0.40,
+}
+EXPOSURE_MIN_CEMENT = {
+    "Mild": 300,
+    "Moderate": 300,
+    "Severe": 320,
+    "Very Severe": 340,
+    "Marine": 360,
+}
+
+GRADE_STRENGTH = {"M20": 20, "M25": 25, "M30": 30, "M35": 35, "M40": 40}
+
+WATER_BASELINE = {10: 200, 12.5: 195, 20: 186, 40: 165}
+
+def water_for_slump(nom_max_mm: int, slump_mm: int, uses_sp: bool=False, sp_reduction_frac: float=0.0) -> float:
+    base = WATER_BASELINE.get(int(nom_max_mm), 186)
+    if slump_mm <= 50:
+        water = base
+    else:
+        extra_25 = max(0, (slump_mm - 50) / 25.0)
+        water = base * (1 + 0.03 * extra_25)
+    if uses_sp and sp_reduction_frac > 0:
+        water *= (1 - sp_reduction_frac)
+    return float(water)
+
+def aggregate_correction(delta_moisture_pct: float, agg_mass_ssd: float):
+    water_delta = (delta_moisture_pct / 100.0) * agg_mass_ssd
+    corrected_mass = agg_mass_ssd * (1 + delta_moisture_pct / 100.0)
+    return float(water_delta), float(corrected_mass)
+
+FINE_AGG_ZONE_LIMITS = {
+    "Zone I":  {"10.0": (100,100),"4.75": (90,100),"2.36": (60,95),"1.18": (30,70),"0.600": (15,34),"0.300": (5,20),"0.150": (0,10)},
+    "Zone II": {"10.0": (100,100),"4.75": (90,100),"2.36": (75,100),"1.18": (55,90),"0.600": (35,59),"0.300": (8,30),"0.150": (0,10)},
+    "Zone III":{"10.0": (100,100),"4.75": (90,100),"2.36": (85,100),"1.18": (75,100),"0.600": (60,79),"0.300": (12,40),"0.150": (0,10)},
+    "Zone IV": {"10.0": (100,100),"4.75": (95,100),"2.36": (95,100),"1.18": (90,100),"0.600": (80,100),"0.300": (15,50),"0.150": (0,15)},
+}
+COARSE_20MM_LIMITS = {"40.0": (95,100), "20.0": (95,100), "10.0": (25,55), "4.75": (0,10)}
 
 # =========================
 # Data Loading
@@ -37,43 +80,35 @@ materials_df, emissions_df = load_data()
 # Core Mix Helpers
 # =========================
 def evaluate_mix(components_dict, emissions_df):
-    """components_dict -> {'Material': qty_kgm3, ...} -> returns dataframe with CO2."""
     df = pd.DataFrame(list(components_dict.items()), columns=["Material", "Quantity (kg/m3)"])
     df = df.merge(emissions_df, on="Material", how="left")
     df["CO2_Emissions (kg/m3)"] = df["Quantity (kg/m3)"] * df["CO2_Factor(kg_CO2_per_kg)"]
     return df
 
 def generate_mix(grade, exposure, nom_max, target_slump, emissions, use_sp=True, sp_reduction=0.18):
-    """
-    Rule-based optimizer (grid) using IS-style w/b caps and IS 10262 water target.
-    Returns (mix_df, meta)
-    """
     w_b_limit = float(EXPOSURE_WB_LIMITS[exposure])
     min_cem = float(EXPOSURE_MIN_CEMENT[exposure])
-
-    # IS 10262 water target based on slump & SP
     target_water = water_for_slump(nom_max_mm=nom_max, slump_mm=int(target_slump), uses_sp=use_sp, sp_reduction_frac=sp_reduction)
 
     best_df, best_meta, best_co2 = None, None, float("inf")
 
-    for wb in np.linspace(0.35, w_b_limit, 6):          # candidate w/b ratios
+    for wb in np.linspace(0.35, w_b_limit, 6):
         for flyash_frac in [0.0, 0.2, 0.3]:
             for ggbs_frac in [0.0, 0.3, 0.5]:
                 if flyash_frac + ggbs_frac > 0.50:
                     continue
 
-                cementitious = max(target_water / wb, min_cem)   # kg/m³
+                cementitious = max(target_water / wb, min_cem)
                 cement = cementitious * (1 - flyash_frac - ggbs_frac)
                 flyash = cementitious * flyash_frac
                 ggbs = cementitious * ggbs_frac
 
-                # Simple aggregate pack (kept constant for demo stability)
                 fine = 650.0
                 coarse = 1150.0
                 sp = 2.5 if use_sp else 0.0
 
                 mix = {
-                    "OPC 43": cement,  # default binder (will compare with PPC baseline if chosen)
+                    "OPC 43": cement,
                     "Fly Ash": flyash,
                     "GGBS": ggbs,
                     "Water": target_water,
@@ -103,15 +138,13 @@ def generate_mix(grade, exposure, nom_max, target_slump, emissions, use_sp=True,
 
     return best_df, best_meta
 
-def generate_baseline(grade, exposure, nom_max, target_slump, emissions, baseline_type="OPC 43", use_sp=True, sp_reduction=0.18):
-    """Baseline with 100% cementitious as selected cement (OPC 33, OPC 43, OPC 53, PPC)."""
+def generate_baseline(grade, exposure, nom_max, target_slump, emissions, baseline_type="OPC", use_sp=True, sp_reduction=0.18):
     w_b_limit = float(EXPOSURE_WB_LIMITS[exposure])
     min_cem = float(EXPOSURE_MIN_CEMENT[exposure])
-
     water_target = water_for_slump(nom_max_mm=nom_max, slump_mm=int(target_slump), uses_sp=use_sp, sp_reduction_frac=sp_reduction)
     cementitious = max(water_target / w_b_limit, min_cem)
 
-    cement_name = baseline_type
+    cement_name = "OPC 43" if baseline_type == "OPC" else "PPC"
     mix = {
         cement_name: cementitious,
         "Fly Ash": 0.0,
@@ -160,6 +193,39 @@ def compliance_checks(mix_df, meta, exposure):
     }
     return checks, derived
 
+def sieve_check_fa(df: pd.DataFrame, zone: str):
+    limits = FINE_AGG_ZONE_LIMITS[zone]
+    ok, msgs = True, []
+    for sieve, (lo, hi) in limits.items():
+        row = df.loc[df["Sieve_mm"].astype(str) == sieve]
+        if row.empty:
+            msgs.append(f"Missing sieve {sieve} mm.")
+            ok = False
+            continue
+        p = float(row["PercentPassing"].iloc[0])
+        if not (lo <= p <= hi):
+            ok = False
+            msgs.append(f"{sieve} mm → {p:.1f}% (req {lo}-{hi}%)")
+    if ok and not msgs:
+        msgs = [f"Fine aggregate meets IS 383 {zone}."]
+    return ok, msgs
+
+def sieve_check_ca20(df: pd.DataFrame):
+    ok, msgs = True, []
+    for sieve, (lo, hi) in COARSE_20MM_LIMITS.items():
+        row = df.loc[df["Sieve_mm"].astype(str) == sieve]
+        if row.empty:
+            msgs.append(f"Missing sieve {sieve} mm.")
+            ok = False
+            continue
+        p = float(row["PercentPassing"].iloc[0])
+        if not (lo <= p <= hi):
+            ok = False
+            msgs.append(f"{sieve} mm → {p:.1f}% (req {lo}-{hi}%)")
+    if ok and not msgs:
+        msgs = ["Coarse aggregate meets IS 383 (20 mm graded)."]
+    return ok, msgs
+
 # =========================
 # UI
 # =========================
@@ -167,14 +233,13 @@ st.title("🌍 CivilGPT")
 st.subheader("AI-Powered Sustainable Concrete Mix Designer (IS-aware)")
 
 st.markdown(
-    "Generates **eco-optimized, IS-style concrete mix designs** and compares against cement baselines (OPC/PPC) with CO₂ footprint and compliance checks."
+    "Generates **eco-optimized, IS-style concrete mix designs** and compares against **OPC/PPC baselines** with CO₂ footprint and compliance checks."
 )
 
-# ---- Sidebar Inputs
 st.sidebar.header("📝 Mix Inputs")
 grade = st.sidebar.selectbox("Concrete Grade", list(GRADE_STRENGTH.keys()), index=2)
 exposure = st.sidebar.selectbox("Exposure Condition", list(EXPOSURE_WB_LIMITS.keys()), index=2)
-baseline_choice = st.sidebar.selectbox("Baseline Cement Type", ["OPC 33", "OPC 43", "OPC 53", "PPC"], index=1)
+baseline_choice = st.sidebar.radio("Baseline Mix Type", ["OPC", "PPC"], index=1)
 
 st.sidebar.markdown("### Workability & Aggregates")
 nom_max = st.sidebar.selectbox("Nominal max aggregate (mm)", [10, 12.5, 20, 40], index=2)
@@ -221,7 +286,6 @@ if st.button("Generate Sustainable Mix"):
             st.subheader(f"{baseline_choice} Baseline Mix")
             st.dataframe(base_df, use_container_width=True)
 
-            # KPIs
             co2_opt = float(opt_df["CO2_Emissions (kg/m3)"].sum())
             co2_base = float(base_df["CO2_Emissions (kg/m3)"].sum())
             reduction = (co2_base - co2_opt) / co2_base * 100 if co2_base > 0 else 0.0
@@ -285,7 +349,18 @@ if st.button("Generate Sustainable Mix"):
             if fine_csv is None and coarse_csv is None:
                 st.info("Upload sieve CSVs (optional) to auto-check IS 383 fine zone & 20 mm coarse gradation.")
 
+            # =========================
+            # Charts
+            # =========================
+            st.markdown("### 📊 CO₂ Comparison Chart")
+            fig, ax = plt.subplots()
+            ax.bar(["Optimized", f"{baseline_choice} Baseline"], [co2_opt, co2_base], color=["green", "grey"])
+            ax.set_ylabel("CO₂ Emissions (kg/m³)")
+            st.pyplot(fig)
+
+            # =========================
             # Downloads
+            # =========================
             csv_opt = opt_df.to_csv(index=False).encode("utf-8")
             st.download_button("📥 Download Optimized Mix (CSV)", data=csv_opt,
                                file_name=f"CivilGPT_{grade}_optimized.csv", mime="text/csv")
@@ -293,8 +368,31 @@ if st.button("Generate Sustainable Mix"):
             st.download_button("📥 Download Baseline Mix (CSV)", data=csv_base,
                                file_name=f"CivilGPT_{grade}_{baseline_choice}_baseline.csv", mime="text/csv")
 
+            # Excel report
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                opt_df.to_excel(writer, sheet_name="Optimized Mix", index=False)
+                base_df.to_excel(writer, sheet_name="Baseline Mix", index=False)
+            st.download_button("📊 Download Report (Excel)", data=buffer.getvalue(),
+                               file_name=f"CivilGPT_{grade}_Report.xlsx", mime="application/vnd.ms-excel")
+
+            # PDF report
+            pdf_buffer = BytesIO()
+            doc = SimpleDocTemplate(pdf_buffer)
+            styles = getSampleStyleSheet()
+            story = []
+            story.append(Paragraph("CivilGPT Sustainable Mix Report", styles["Title"]))
+            story.append(Spacer(1, 12))
+            story.append(Paragraph(f"Grade: {grade} | Exposure: {exposure} | Baseline: {baseline_choice}", styles["Normal"]))
+            story.append(Paragraph(f"Optimized CO₂: {co2_opt:.1f} kg/m³", styles["Normal"]))
+            story.append(Paragraph(f"{baseline_choice} Baseline CO₂: {co2_base:.1f} kg/m³", styles["Normal"]))
+            story.append(Paragraph(f"Reduction: {reduction:.1f} %", styles["Normal"]))
+            doc.build(story)
+            st.download_button("📄 Download Report (PDF)", data=pdf_buffer.getvalue(),
+                               file_name=f"CivilGPT_{grade}_Report.pdf", mime="application/pdf")
+
 else:
     st.info("Set parameters in the sidebar and click **Generate Sustainable Mix**.")
 
 st.markdown("---")
-st.caption("CivilGPT v1.4 | IS-aware Sustainable Concrete Mix Designer")
+st.caption("CivilGPT v1.4 | IS-aware Sustainable Concrete Mix Designer with Charts & Reports")
