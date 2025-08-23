@@ -1,10 +1,11 @@
-Material,Type,Specific_Gravity,Water_Absorption(%),Bulk_Density(kg/m3)
-OPC 43,Cement,—,0.0,1440
-OPC 53,Cement,—,0.0,1440
-PPC,Cement,—,0.0,1410
-Fly Ash,SCM,2.20,0.0,1100
-GGBS,SCM,2.90,0.0,1200
-M-Sand,Fine Aggregate,2.65,1.5,1600
-20mm Coarse Aggregate,Coarse Aggregate,2.70,0.5,1500
-Water,Admixture,1.00,0.0,1000
-PCE Superplasticizer,Admixture,1.10,0.0,1100
+Material,Description,UnitCost(INR_per_kg),Density(kg_per_m3)
+OPC 33,Ordinary Portland Cement 33 Grade,6.0,3150
+OPC 43,Ordinary Portland Cement 43 Grade,6.2,3150
+OPC 53,Ordinary Portland Cement 53 Grade,6.5,3150
+PPC,Portland Pozzolana Cement,5.8,3100
+Fly Ash,Class F Fly Ash,1.5,2200
+GGBS,Ground Granulated Blast Furnace Slag,2.0,2900
+Water,Potable Water,0.0,1000
+PCE Superplasticizer,Polycarboxylate Ether SP,45.0,1100
+M-Sand,Manufactured Sand,0.8,2650
+20mm Coarse Aggregate,Crushed Stone 20mm,0.7,2700
