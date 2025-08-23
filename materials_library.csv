@@ -1,0 +1,9 @@
+Material,Type,Specific_Gravity,Water_Absorption(%),Bulk_Density(kg/m3)
+OPC 43,Cement,—,0.0,1440
+OPC 53,Cement,—,0.0,1440
+Fly Ash,SCM,2.20,0.0,1100
+GGBS,SCM,2.90,0.0,1200
+M-Sand,Fine Aggregate,2.65,1.5,1600
+20mm Coarse Aggregate,Coarse Aggregate,2.70,0.5,1500
+Water,Admixture,1.00,0.0,1000
+PCE Superplasticizer,Admixture,1.10,0.0,1100
