@@ -10,13 +10,13 @@ df_slump = pd.read_excel(input_file)
 # 🔎 Print original columns to verify
 print("Original columns in Excel:", df_slump.columns.tolist())
 
-# If mismatch occurs, auto-generate safe column names
+# Define expected columns
 expected_cols = [
     "Cement", "BlastFurnaceSlag", "FlyAsh", "Water", "Superplasticizer",
     "CoarseAggregate", "FineAggregate", "Age", "Slump", "Flow", "CompressiveStrength"
 ]
 
-# If numbers match, rename → else fallback
+# Check column count
 if len(df_slump.columns) == len(expected_cols):
     df_slump.columns = expected_cols
 else:
