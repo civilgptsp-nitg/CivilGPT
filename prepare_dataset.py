@@ -1,35 +1,18 @@
 import pandas as pd
-from pathlib import Path
 
-INPUT_XLS = "data/Concrete_Data.xls"  # make sure file name matches exactly
-OUTPUT_DIR = Path("data/processed")
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_CSV = OUTPUT_DIR / "dataset_processed.csv"
+# Load datasets
+slump = pd.read_csv("data/slump_test.data")
+concrete = pd.read_excel("data/Concrete_Data.xls")
+scc = pd.read_excel("data/dataset.SCC.xlsx")
 
-# Load the Excel file
-df = pd.read_excel(INPUT_XLS)
+# Show basic info
+print("Slump shape:", slump.shape)
+print("Concrete shape:", concrete.shape)
+print("SCC shape:", scc.shape)
 
-print("Original columns:", df.columns.tolist())
+# Save cleaned copies into processed folder
+slump.to_csv("data/processed/slump.csv", index=False)
+concrete.to_csv("data/processed/concrete.csv", index=False)
+scc.to_csv("data/processed/scc.csv", index=False)
 
-# If there is an extra index-like column, drop it safely
-index_like = {"no", "no.", "id", "index", "unnamed: 0"}
-first_col_name = str(df.columns[0]).strip().lower()
-if len(df.columns) == 11 and (first_col_name in index_like or "unnamed" in first_col_name):
-    df = df.drop(df.columns[0], axis=1)
-
-# Expected 10 columns for UCI dataset
-expected_names = [
-    "cement", "slag", "fly_ash", "water", "superplasticizer",
-    "coarse_agg", "fine_agg", "slump_cm", "flow_cm", "strength_mpa"
-]
-
-if len(df.columns) == 10:
-    df.columns = expected_names
-else:
-    # Don’t crash—just show details
-    print("⚠️ Unexpected number of columns:", len(df.columns))
-    print("Columns:", df.columns.tolist())
-    print("Not renaming. Saving raw copy so we can inspect.")
-
-# Save processed (or raw if unexpected) to CSV
-df.to_csv(OUTPUT_CS
+print("✅ All datasets processed and saved in data/processed/")
