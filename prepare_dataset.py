@@ -7,26 +7,13 @@ input_file = "data/concrete_Data.xls"
 # Load dataset
 df_slump = pd.read_excel(input_file)
 
-# 🔎 Print original columns to verify
+# 🔎 Print original columns from Excel
 print("Original columns in Excel:", df_slump.columns.tolist())
 
-# Define expected columns
-expected_cols = [
-    "Cement", "BlastFurnaceSlag", "FlyAsh", "Water", "Superplasticizer",
-    "CoarseAggregate", "FineAggregate", "Age", "Slump", "Flow", "CompressiveStrength"
-]
-
-# Check column count
-if len(df_slump.columns) == len(expected_cols):
-    df_slump.columns = expected_cols
-else:
-    df_slump.columns = [f"col_{i}" for i in range(len(df_slump.columns))]
-    print("⚠️ Column count mismatch. Assigned generic names instead.")
-
-# Save cleaned dataset
+# Save dataset without renaming columns yet
 output_dir = Path("data/processed")
 output_dir.mkdir(parents=True, exist_ok=True)
 output_file = output_dir / "dataset_processed.csv"
 df_slump.to_csv(output_file, index=False)
 
-print(f"✅ Processed dataset saved at {output_file}")
+print(f"✅ Dataset saved at {output_file}")
