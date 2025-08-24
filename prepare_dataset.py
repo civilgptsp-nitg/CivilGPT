@@ -32,6 +32,4 @@ else:
     print("Not renaming. Saving raw copy so we can inspect.")
 
 # Save processed (or raw if unexpected) to CSV
-df.to_csv(OUTPUT_CSV, index=False)
-print(f"✅ Saved: {OUTPUT_CSV}")
-print(df.head(3))
+df.to_csv(OUTPUT_CS
