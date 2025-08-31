@@ -1,9 +1,10 @@
-# app.py — CivilGPT v1.6 (IS-aware refinements + OPC grades)
+# app.py — CivilGPT v1.6.1 (IS-aware refinements + robust CSV handling + meta JSON downloads)
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from io import BytesIO
+import json
 
 # For PDF export
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -92,15 +93,103 @@ COARSE_LIMITS = {
 # =========================
 # Helpers
 # =========================
+def _normalize_emissions_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Accepts various common schemas and normalizes to:
+      columns: ["Material", "CO2_Factor(kg_CO2_per_kg)"]
+    """
+    df2 = df.copy()
+    # Lowercase mapping
+    lower_cols = {c.lower(): c for c in df2.columns}
+    # Material column options
+    mat_col = None
+    for cand in ["material", "materials", "name"]:
+        if cand in lower_cols:
+            mat_col = lower_cols[cand]; break
+    if mat_col is None and "Material" in df2.columns:
+        mat_col = "Material"
+    # CO2 factor column options
+    co2_col = None
+    for cand in ["kg_co2_per_kg", "co2_factor", "co2", "kgco2perkg", "co2_factor(kg_co2_per_kg)"]:
+        if cand in lower_cols:
+            co2_col = lower_cols[cand]; break
+    if co2_col is None and "CO2_Factor(kg_CO2_per_kg)" in df2.columns:
+        co2_col = "CO2_Factor(kg_CO2_per_kg)"
+
+    if mat_col is None or co2_col is None:
+        # If we can't find expected columns, just return as-is; downstream will raise clear error.
+        return df2
+
+    df2 = df2.rename(columns={
+        mat_col: "Material",
+        co2_col: "CO2_Factor(kg_CO2_per_kg)"
+    })
+    return df2[["Material", "CO2_Factor(kg_CO2_per_kg]".replace("]",")")]]  # safe slice fix
+
 @st.cache_data
-def load_data():
-    try:
-        materials = pd.read_csv("materials_library.csv")
-        emissions = pd.read_csv("emission_factors.csv")
-        return materials, emissions
-    except Exception as e:
-        st.error(f"Error loading CSVs: {e}")
+def _read_csv_flexible(path: str) -> pd.DataFrame:
+    return pd.read_csv(path)
+
+@st.cache_data
+def load_data(materials_file=None, emissions_file=None):
+    """
+    Robust loader:
+      1) If sidebar uploaders provided, use those
+      2) Else try repo root
+      3) Else try data/
+    """
+    materials = None
+    emissions = None
+    errors = []
+
+    # Try uploaded files first
+    if materials_file is not None:
+        try:
+            materials = pd.read_csv(materials_file)
+        except Exception as e:
+            errors.append(f"Uploaded materials CSV error: {e}")
+    if emissions_file is not None:
+        try:
+            emissions = pd.read_csv(emissions_file)
+        except Exception as e:
+            errors.append(f"Uploaded emissions CSV error: {e}")
+
+    # Try repo root if still None
+    if materials is None:
+        try:
+            materials = _read_csv_flexible("materials_library.csv")
+        except Exception as e:
+            errors.append(f"materials_library.csv not found in root: {e}")
+    if emissions is None:
+        try:
+            emissions = _read_csv_flexible("emission_factors.csv")
+        except Exception as e:
+            errors.append(f"emission_factors.csv not found in root: {e}")
+
+    # Try data/ folder
+    if materials is None:
+        try:
+            materials = _read_csv_flexible("data/materials_library.csv")
+        except Exception as e:
+            errors.append(f"data/materials_library.csv not found: {e}")
+    if emissions is None:
+        try:
+            emissions = _read_csv_flexible("data/emission_factors.csv")
+        except Exception as e:
+            errors.append(f"data/emission_factors.csv not found: {e}")
+
+    if materials is None or emissions is None:
+        st.error("Error loading CSVs. Details:\n" + "\n".join(errors))
         return None, None
+
+    # Normalize emissions schema if needed
+    emissions = _normalize_emissions_df(emissions)
+    if "Material" not in emissions.columns or "CO2_Factor(kg_CO2_per_kg)" not in emissions.columns:
+        st.error("Emission factors CSV must have columns: Material, CO2_Factor(kg_CO2_per_kg). "
+                 "Tip: rename your columns or update the CSV.")
+        return None, None
+
+    return materials, emissions
 
 def water_for_slump_and_shape(nom_max_mm: int, slump_mm: int,
                               agg_shape: str,
@@ -117,8 +206,12 @@ def water_for_slump_and_shape(nom_max_mm: int, slump_mm: int,
     return float(water)
 
 def evaluate_mix(components_dict, emissions_df):
-    df = pd.DataFrame(list(components_dict.items()), columns=["Material", "Quantity (kg/m3)"])
-    df = df.merge(emissions_df, on="Material", how="left")
+    comp_df = pd.DataFrame(list(components_dict.items()), columns=["Material", "Quantity (kg/m3)"])
+    df = comp_df.merge(emissions_df, on="Material", how="left")
+    if df["CO2_Factor(kg_CO2_per_kg)"].isna().any():
+        missing = df.loc[df["CO2_Factor(kg_CO2_per_kg)"].isna(), "Material"].unique().tolist()
+        st.warning(f"Missing CO₂ factors for: {missing}. Treated as 0.")
+        df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
     df["CO2_Emissions (kg/m3)"] = df["Quantity (kg/m3)"] * df["CO2_Factor(kg_CO2_per_kg)"]
     return df
 
@@ -203,6 +296,7 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape,
                 cement = cementitious * (1 - flyash_frac - ggbs_frac)
                 flyash = cementitious * flyash_frac
                 ggbs   = cementitious * ggbs_frac
+                # Simple aggregate placeholders (volume method can replace in future)
                 fine = 650.0
                 coarse = 1150.0
                 sp = 2.5 if use_sp else 0.0
@@ -308,18 +402,24 @@ fine_zone = st.sidebar.selectbox("Fine agg zone (IS 383)", ["Zone I","Zone II","
 fine_csv = st.sidebar.file_uploader("Fine sieve CSV (Sieve_mm,PercentPassing)", type=["csv"], key="fine_csv")
 coarse_csv = st.sidebar.file_uploader("Coarse sieve CSV (Sieve_mm,PercentPassing)", type=["csv"], key="coarse_csv")
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("#### (Optional) Provide CSVs here")
+materials_file = st.sidebar.file_uploader("materials_library.csv", type=["csv"], key="materials_csv")
+emissions_file = st.sidebar.file_uploader("emission_factors.csv", type=["csv"], key="emissions_csv")
+
 # =========================
 # Data
 # =========================
-materials_df, emissions_df = load_data()
+materials_df, emissions_df = load_data(materials_file, emissions_file)
 
 # =========================
 # Run
 # =========================
 if st.button("Generate Sustainable Mix"):
     if materials_df is None or emissions_df is None:
-        st.error("CSV files missing in repo.")
+        st.error("CSV files missing or invalid. Fix and retry.")
     else:
+        # Enforce minimum grade per exposure (without deleting user choice; we warn and proceed)
         min_grade_required = EXPOSURE_MIN_GRADE[exposure]
         grade_order = list(GRADE_STRENGTH.keys())
         if grade_order.index(grade) < grade_order.index(min_grade_required):
@@ -421,6 +521,7 @@ if st.button("Generate Sustainable Mix"):
             ax.set_ylabel("CO₂ Emissions (kg/m³)")
             st.pyplot(fig)
 
+            # ---- Downloads (CSV)
             csv_opt = opt_df.to_csv(index=False).encode("utf-8")
             st.download_button("📥 Download Optimized Mix (CSV)", data=csv_opt,
                                file_name=f"CivilGPT_{grade}_optimized.csv", mime="text/csv")
@@ -428,6 +529,17 @@ if st.button("Generate Sustainable Mix"):
             st.download_button("📥 Download Baseline Mix (CSV)", data=csv_base,
                                file_name=f"CivilGPT_{grade}_{cement_choice}_baseline.csv", mime="text/csv")
 
+            # ---- Downloads (JSON meta)
+            st.download_button("🧾 Download Optimized Meta (JSON)",
+                               data=json.dumps(opt_meta, indent=2),
+                               file_name=f"CivilGPT_{grade}_optimized_meta.json",
+                               mime="application/json")
+            st.download_button("🧾 Download Baseline Meta (JSON)",
+                               data=json.dumps(base_meta, indent=2),
+                               file_name=f"CivilGPT_{grade}_{cement_choice}_baseline_meta.json",
+                               mime="application/json")
+
+            # ---- Excel export
             try:
                 buffer = BytesIO()
                 with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
@@ -439,6 +551,7 @@ if st.button("Generate Sustainable Mix"):
             except Exception as e:
                 st.warning(f"Excel export unavailable: {e}")
 
+            # ---- PDF export (high-level summary)
             try:
                 pdf_buffer = BytesIO()
                 doc = SimpleDocTemplate(pdf_buffer)
@@ -461,11 +574,4 @@ else:
     st.info("Set parameters and click **Generate Sustainable Mix**.")
 
 st.markdown("---")
-st.caption("CivilGPT v1.6 | IS-aware Sustainable Concrete Mix Designer — OPC 33/43/53, PPC • Grades M10–M80 • IS 456/10262/383 compliant")
-
-
-
-
-
-
-
+st.caption("CivilGPT v1.6.1 | IS-aware Sustainable Concrete Mix Designer — OPC 33/43/53, PPC • Grades M10–M80 • IS 456/10262/383 compliant")
