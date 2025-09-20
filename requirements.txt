@@ -1,7 +1,7 @@
-streamlit
-pandas
-numpy
-matplotlib
-reportlab
-xlsxwriter
-
+streamlit==1.49.1
+pandas==2.2.3
+numpy==2.1.1
+matplotlib==3.9.2
+reportlab==4.2.2
+xlsxwriter==3.2.9
+openpyxl==3.1.5
