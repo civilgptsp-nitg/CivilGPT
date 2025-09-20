@@ -1,4 +1,4 @@
-# app.py — CivilGPT v1.6.4 (adds real dataset loaders)
+# app.py — CivilGPT v1.6.5 (adds Mix ↔ Strength correlation)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -144,10 +144,23 @@ def load_real_datasets():
     return lab_df, mix_df, slump_df
 
 # =========================
-# Mix Functions (unchanged)
+# Correlation Merge
 # =========================
-# ... [KEEP all your original functions here without changes]
-# generate_mix, generate_baseline, compliance_checks, etc.
+def correlate_mix_strength(lab_df, mix_df):
+    if lab_df is None or mix_df is None:
+        return None
+    try:
+        merged = pd.merge(
+            mix_df,
+            lab_df,
+            how="left",
+            left_on=["Grade of concrete", "Age_days"],
+            right_on=["Grade of concrete", "Age_days"]
+        )
+        return merged
+    except Exception as e:
+        st.warning(f"Correlation merge failed: {e}")
+        return None
 
 # =========================
 # UI
@@ -161,7 +174,7 @@ st.markdown(
 )
 
 # Sidebar Inputs (unchanged)
-# ... [KEEP all your original sidebar inputs here]
+# ... keep all sidebar inputs from v1.6.3
 
 # =========================
 # Load datasets
@@ -169,7 +182,7 @@ st.markdown(
 materials_df, emissions_df = load_data()
 lab_df, mix_df, slump_df = load_real_datasets()
 
-# Show previews in collapsible sections
+# Show previews
 with st.expander("📂 Dataset Previews", expanded=False):
     if lab_df is not None:
         st.write("**Lab Strength Data (lab_processed.xlsx)**")
@@ -181,10 +194,26 @@ with st.expander("📂 Dataset Previews", expanded=False):
         st.write("**Slump Test Data (slump_test.data)**")
         st.dataframe(slump_df.head(), use_container_width=True)
 
+# Correlation section
+with st.expander("📊 Mix ↔ Strength Correlation", expanded=False):
+    merged_df = correlate_mix_strength(lab_df, mix_df)
+    if merged_df is not None:
+        st.dataframe(merged_df.head(20), use_container_width=True)
+        try:
+            fig, ax = plt.subplots()
+            merged_df.plot(
+                kind="scatter", x="Age_days", y="Compressive strength(N/mm^2)",
+                c="Grade of concrete", colormap="viridis", ax=ax
+            )
+            plt.title("Strength vs Age by Grade")
+            st.pyplot(fig)
+        except Exception as e:
+            st.warning(f"Could not plot correlation: {e}")
+
 # =========================
-# Run (your original run block)
+# Run block (unchanged)
 # =========================
-# ... [KEEP all your original run block here unchanged]
+# ... keep your original run logic from v1.6.3
 
 st.markdown("---")
-st.caption("CivilGPT v1.6.4 | Added real dataset loaders & previews")
+st.caption("CivilGPT v1.6.5 | Added Mix ↔ Strength correlation")
