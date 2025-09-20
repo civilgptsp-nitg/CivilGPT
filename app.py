@@ -26,19 +26,32 @@ st.set_page_config(
 # =========================
 # Dataset Path Handling
 # =========================
-LAB_FILE = "lab_processed_standardized.xlsx"
+LAB_FILE = "lab_processed_mgrades_only.xlsx"
 MIX_FILE = "concrete_mix_design_data_cleaned_standardized.xlsx"
 
 def safe_load_excel(name):
     """Try loading Excel robustly from root/ or data/ (case-insensitive)."""
     for p in [name, f"data/{name}"]:
         if os.path.exists(p):
-            return pd.read_excel(p)
+            try:
+                return pd.read_excel(p)
+            except Exception:
+                # last resort: try openpyxl engine specifically
+                try:
+                    return pd.read_excel(p, engine="openpyxl")
+                except Exception:
+                    return None
     data_dir = "data"
     if os.path.exists(data_dir):
         for fname in os.listdir(data_dir):
             if fname.lower() == name.lower():
-                return pd.read_excel(os.path.join(data_dir, fname))
+                try:
+                    return pd.read_excel(os.path.join(data_dir, fname))
+                except Exception:
+                    try:
+                        return pd.read_excel(os.path.join(data_dir, fname), engine="openpyxl")
+                    except Exception:
+                        return None
     return None
 
 lab_df = safe_load_excel(LAB_FILE)
@@ -305,10 +318,14 @@ def compliance_table(checks: dict) -> pd.DataFrame:
     return df[["Check", "Result"]]
 
 # =========================
-# Mix Generators (unchanged)
+# Mix Generators
 # =========================
 def generate_mix(grade, exposure, nom_max, target_slump, agg_shape,
                  emissions, cement_choice, use_sp=True, sp_reduction=0.18):
+    """
+    Generate candidate mixes and pick the one with lowest CO2 that meets IS-style checks.
+    Returns DataFrame (components) and meta dict.
+    """
     w_b_limit = float(EXPOSURE_WB_LIMITS[exposure])
     min_cem = float(EXPOSURE_MIN_CEMENT[exposure])
     target_water = water_for_slump_and_shape(
@@ -316,35 +333,44 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape,
         agg_shape=agg_shape, uses_sp=use_sp, sp_reduction_frac=sp_reduction
     )
     best_df, best_meta, best_co2 = None, None, float("inf")
-    for wb in np.linspace(0.35, w_b_limit, 6):
-        for flyash_frac in [0.0, 0.2, 0.3]:
-            for ggbs_frac in [0.0, 0.3, 0.5]:
+    # Search grid
+    wb_values = np.linspace(0.35, w_b_limit, 6)
+    flyash_options = [0.0, 0.2, 0.3]
+    ggbs_options = [0.0, 0.3, 0.5]
+    for wb in wb_values:
+        for flyash_frac in flyash_options:
+            for ggbs_frac in ggbs_options:
                 if flyash_frac + ggbs_frac > 0.50:
                     continue
-                cementitious = max(target_water / wb, min_cem)
-                cement = cementitious * (1 - flyash_frac - ggbs_frac)
-                flyash = cementitious * flyash_frac
-                ggbs   = cementitious * ggbs_frac
+                # binder / cementitious content
+                binder = max(target_water / wb, min_cem)
+                cement = binder * (1 - flyash_frac - ggbs_frac)
+                flyash = binder * flyash_frac
+                ggbs = binder * ggbs_frac
+                # simple aggregate assignment (volume method simplified)
                 fine = 650.0
                 coarse = 1150.0
                 sp = 2.5 if use_sp else 0.0
                 mix = {
-                    cement_choice: cement,
-                    "Fly Ash": flyash,
-                    "GGBS": ggbs,
-                    "Water": target_water,
-                    "PCE Superplasticizer": sp,
+                    cement_choice: round(cement, 3),
+                    "Fly Ash": round(flyash, 3),
+                    "GGBS": round(ggbs, 3),
+                    "Water": round(target_water, 3),
+                    "PCE Superplasticizer": round(sp, 3),
                     "M-Sand": fine,
                     "20mm Coarse Aggregate": coarse,
                 }
                 df = evaluate_mix(mix, emissions)
                 total_co2 = float(df["CO2_Emissions (kg/m3)"].sum())
+                # feasibility quick checks
+                # compute basic derived checks
                 if total_co2 < best_co2:
+                    # optional feasibility checks could be added here
                     best_df = df.copy()
                     best_co2 = total_co2
                     best_meta = {
                         "w_b": float(wb),
-                        "cementitious": float(cementitious),
+                        "cementitious": float(binder),
                         "cement": float(cement),
                         "flyash": float(flyash),
                         "ggbs": float(ggbs),
@@ -360,6 +386,9 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape,
 
 def generate_baseline(grade, exposure, nom_max, target_slump, agg_shape,
                       emissions, cement_choice, use_sp=True, sp_reduction=0.18):
+    """
+    Generate baseline (100% OPC) mix for comparison.
+    """
     w_b_limit = float(EXPOSURE_WB_LIMITS[exposure])
     min_cem = float(EXPOSURE_MIN_CEMENT[exposure])
     water_target = water_for_slump_and_shape(
@@ -368,10 +397,10 @@ def generate_baseline(grade, exposure, nom_max, target_slump, agg_shape,
     )
     cementitious = max(water_target / w_b_limit, min_cem)
     mix = {
-        cement_choice: cementitious,
+        cement_choice: float(cementitious),
         "Fly Ash": 0.0,
         "GGBS": 0.0,
-        "Water": water_target,
+        "Water": float(water_target),
         "PCE Superplasticizer": 2.5 if use_sp else 0.0,
         "M-Sand": 650.0,
         "20mm Coarse Aggregate": 1150.0,
@@ -411,7 +440,8 @@ try:
 except Exception:
     supported_grades = []
 
-supported_grades = sorted(set([s.strip() for s in supported_grades]))
+# sanitize
+supported_grades = sorted(set([s.strip() for s in supported_grades if isinstance(s, str)]))
 
 # Determine supported cement types from mix dataset (if present)
 supported_cements = []
@@ -419,13 +449,12 @@ try:
     if mix_df is not None:
         cement_cols = [c for c in mix_df.columns if 'cement' in c.lower()]
         if cement_cols:
-            # choose the most likely cement column name
             cement_col = cement_cols[0]
             supported_cements.extend(mix_df[cement_col].dropna().astype(str).unique().tolist())
 except Exception:
     supported_cements = []
 
-supported_cements = sorted(set([s.strip() for s in supported_cements]))
+supported_cements = sorted(set([s.strip() for s in supported_cements if isinstance(s, str)]))
 
 # Fallbacks
 if not supported_grades:
@@ -474,17 +503,46 @@ if emissions_df is None or emissions_df.shape[0] == 0:
     emissions_df = pd.DataFrame(columns=["Material","CO2_Factor(kg_CO2_per_kg)"])
 
 # =========================
-# Dataset Previews & Correlation (UI sections already displayed above)
+# Dataset Previews & Correlation
 # =========================
+st.header("CivilGPT — Sustainable Concrete Mix Designer")
+st.markdown("Upload materials/emissions CSV to override defaults. Mix generation will use datasets in repo if available.")
+
+with st.expander("📁 Current dataset preview (Lab)"):
+    if lab_df is None:
+        st.write("No lab dataset found. Expected file:", LAB_FILE)
+    else:
+        st.write("Showing first 10 rows of the lab dataset:")
+        st.dataframe(lab_df.head(10))
+
+with st.expander("📁 Current dataset preview (Mix designs)"):
+    if mix_df is None:
+        st.write("No mix dataset found. Expected file:", MIX_FILE)
+    else:
+        st.write("Showing first 10 rows of the mix dataset:")
+        st.dataframe(mix_df.head(10))
+
+# Quick correlation preview if lab_df present and has numeric compressive strength
+if lab_df is not None:
+    strength_cols = [c for c in lab_df.columns if 'compress' in c.lower() or 'strength' in c.lower()]
+    if strength_cols:
+        col = strength_cols[0]
+        st.markdown("### Lab data — Strength distribution")
+        try:
+            fig, ax = plt.subplots()
+            lab_df[col].dropna().astype(float).hist(bins=20, ax=ax)
+            ax.set_xlabel(col)
+            st.pyplot(fig)
+        except Exception:
+            st.write("Could not generate strength histogram.")
 
 # =========================
 # Run
 # =========================
-# prepare placeholders for download objects so that they exist if generation fails
 csv_opt = None
 csv_base = None
-buffer = None
-pdf_buffer = None
+excel_bytes = None
+pdf_bytes = None
 
 if st.button("Generate Sustainable Mix"):
     try:
@@ -494,31 +552,59 @@ if st.button("Generate Sustainable Mix"):
             # enforce minimum grade per exposure
             min_grade_required = EXPOSURE_MIN_GRADE[exposure]
             grade_order = list(GRADE_STRENGTH.keys())
-            if grade_order.index(grade) < grade_order.index(min_grade_required):
-                st.warning(f"Exposure **{exposure}** requires minimum grade **{min_grade_required}** by IS 456. Proceeding with {min_grade_required}.")
-                grade = min_grade_required
-
-            fck = GRADE_STRENGTH.get(grade, None)
-            if fck is None:
-                # Attempt to parse numeric grade if grade is string like "M20"
+            # if grade not in grade_order try to parse M-number
+            parsed_grade = grade
+            if isinstance(parsed_grade, str) and parsed_grade.upper().startswith("M"):
                 try:
-                    if isinstance(grade, str) and grade.upper().startswith("M"):
-                        fck = int(grade.upper().lstrip("M"))
+                    # normalize like 'M20' -> 'M20' (already)
+                    parsed_grade = parsed_grade.strip().upper()
+                except Exception:
+                    parsed_grade = parsed_grade
+            if parsed_grade not in grade_order:
+                # fallback: choose nearest lower grade if possible
+                try:
+                    if isinstance(parsed_grade, str) and parsed_grade.upper().startswith("M"):
+                        gnum = int(parsed_grade.lstrip("M"))
+                        # find closest available
+                        available_nums = [int(g.lstrip("M")) for g in grade_order]
+                        # choose smallest >= gnum or max available
+                        chosen = None
+                        for n in sorted(available_nums):
+                            if n >= gnum:
+                                chosen = f"M{n}"
+                                break
+                        if chosen is None:
+                            chosen = grade_order[-1]
+                        parsed_grade = chosen
+                except Exception:
+                    parsed_grade = grade_order[0]
+
+            # enforce minimum grade per exposure
+            if grade_order.index(parsed_grade) < grade_order.index(min_grade_required):
+                st.warning(f"Exposure **{exposure}** requires minimum grade **{min_grade_required}** by IS 456. Proceeding with {min_grade_required}.")
+                parsed_grade = min_grade_required
+
+            fck = GRADE_STRENGTH.get(parsed_grade, None)
+            if fck is None:
+                try:
+                    if isinstance(parsed_grade, str) and parsed_grade.upper().startswith("M"):
+                        fck = int(parsed_grade.upper().lstrip("M"))
                     else:
                         fck = 30
                 except Exception:
                     fck = 30
+
             S = QC_STDDEV[qc_level]
             fck_target = fck + 1.65 * S
 
             # Generate optimized and baseline mixes
             opt_df, opt_meta = generate_mix(
-                grade=grade, exposure=exposure, nom_max=nom_max, target_slump=target_slump,
+                grade=parsed_grade, exposure=exposure, nom_max=nom_max, target_slump=target_slump,
                 agg_shape=agg_shape, emissions=emissions_df, cement_choice=cement_choice,
                 use_sp=use_sp, sp_reduction=sp_reduction
             )
             base_df, base_meta = generate_baseline(
-                grade=grade, exposure=exposure, nom_max=nom_max, target_slump=target_slump,
+                grade=parsed_grade, exposure=exposure, nom_max=nom_max, target_slump=target_slump,
                 agg_shape=agg_shape, emissions=emissions_df, cement_choice=cement_choice,
                 use_sp=use_sp, sp_reduction=sp_reduction
             )
@@ -531,7 +617,7 @@ if st.button("Generate Sustainable Mix"):
                     m["fck_target"] = round(fck_target, 1)
                     m["stddev_S"] = S
 
-                st.success(f"Mixes generated for **{grade}** under **{exposure}** exposure using {cement_choice}.")
+                st.success(f"Mixes generated for **{parsed_grade}** under **{exposure}** exposure using {cement_choice}.")
 
                 st.subheader("Optimized Sustainable Mix")
                 st.dataframe(opt_df, use_container_width=True)
@@ -558,9 +644,12 @@ if st.button("Generate Sustainable Mix"):
                     with c1:
                         st.json(opt_derived)
                         st.caption(f"Entrapped air assumed: {air_pct:.1f} %")
-                        fa_free_w, _ = aggregate_correction(fa_moist - fa_abs, opt_meta["fine"])
-                        ca_free_w, _ = aggregate_correction(ca_moist - ca_abs, opt_meta["coarse"])
-                        st.write(f"Free water (report): {fa_free_w + ca_free_w:.1f} kg/m³")
+                        try:
+                            fa_free_w, _ = aggregate_correction(fa_moist - fa_abs, opt_meta["fine"])
+                            ca_free_w, _ = aggregate_correction(ca_moist - ca_abs, opt_meta["coarse"])
+                            st.write(f"Free water (report): {fa_free_w + ca_free_w:.1f} kg/m³")
+                        except Exception:
+                            st.write("Free water (report): N/A")
                     with c2:
                         st.table(compliance_table(opt_checks))
 
@@ -569,9 +658,12 @@ if st.button("Generate Sustainable Mix"):
                     with c1:
                         st.json(base_derived)
                         st.caption(f"Entrapped air assumed: {air_pct:.1f} %")
-                        fa_free_w_b, _ = aggregate_correction(fa_moist - fa_abs, base_meta["fine"])
-                        ca_free_w_b, _ = aggregate_correction(ca_moist - ca_abs, base_meta["coarse"])
-                        st.write(f"Free water (report): {fa_free_w_b + ca_free_w_b:.1f} kg/m³")
+                        try:
+                            fa_free_w_b, _ = aggregate_correction(fa_moist - fa_abs, base_meta["fine"])
+                            ca_free_w_b, _ = aggregate_correction(ca_moist - ca_abs, base_meta["coarse"])
+                            st.write(f"Free water (report): {fa_free_w_b + ca_free_w_b:.1f} kg/m³")
+                        except Exception:
+                            st.write("Free water (report): N/A")
                     with c2:
                         st.table(compliance_table(base_checks))
 
@@ -634,7 +726,7 @@ if st.button("Generate Sustainable Mix"):
 
                     story.append(Paragraph("CivilGPT Sustainable Mix Report", styles["Title"]))
                     story.append(Spacer(1, 8))
-                    story.append(Paragraph(f"Grade: {grade} | Exposure: {exposure} | Cement: {cement_choice}", styles["Normal"]))
+                    story.append(Paragraph(f"Grade: {parsed_grade} | Exposure: {exposure} | Cement: {cement_choice}", styles["Normal"]))
                     story.append(Paragraph(f"Target mean strength (IS 10262): {round(fck + 1.65 * S,1)} MPa (S={S})", styles["Normal"]))
                     story.append(Spacer(1, 8))
 
@@ -672,7 +764,15 @@ if st.button("Generate Sustainable Mix"):
                     story.append(Paragraph("Optimized Mix Components (kg/m³)", styles["Heading3"]))
                     opt_table_data = [["Material", "Quantity (kg/m³)", "CO₂ Factor", "CO₂ (kg/m³)"]]
                     for _, row in opt_df.iterrows():
-                        opt_table_data.append([str(row["Material"]), f"{row['Quantity (kg/m3)']:.2f}", f"{row.get('CO2_Factor(kg_CO2_per_kg)',0):.4f}", f"{row.get('CO2_Emissions (kg/m3)',0):.3f}"])
+                        # safe keys for different environments
+                        qty_key = "Quantity (kg/m3)" if "Quantity (kg/m3)" in opt_df.columns else opt_df.columns[1]
+                        co2_key = "CO2_Factor(kg_CO2_per_kg)" if "CO2_Factor(kg_CO2_per_kg)" in opt_df.columns else opt_df.columns[-2]
+                        co2_em_key = "CO2_Emissions (kg/m3)" if "CO2_Emissions (kg/m3)" in opt_df.columns else opt_df.columns[-1]
+                        try:
+                            opt_table_data.append([str(row["Material"]), f"{row[qty_key]:.2f}", f"{row.get('CO2_Factor(kg_CO2_per_kg)',0):.4f}", f"{row.get('CO2_Emissions (kg/m3)',0):.3f}"])
+                        except Exception:
+                            # fallback formatting
+                            opt_table_data.append([str(row.iloc[0]), f"{row.iloc[1]:.2f}", f"{row.iloc[-2] if len(row.index)>2 else 0:.4f}", f"{row.iloc[-1] if len(row.index)>1 else 0:.3f}"])
                     opt_tbl = Table(opt_table_data, hAlign="LEFT")
                     opt_tbl.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.25, colors.grey)]))
                     story.append(opt_tbl)
@@ -681,7 +781,10 @@ if st.button("Generate Sustainable Mix"):
                     story.append(Paragraph("Baseline Mix Components (kg/m³)", styles["Heading3"]))
                     base_table_data = [["Material", "Quantity (kg/m³)", "CO₂ Factor", "CO₂ (kg/m³)"]]
                     for _, row in base_df.iterrows():
-                        base_table_data.append([str(row["Material"]), f"{row['Quantity (kg/m3)']:.2f}", f"{row.get('CO2_Factor(kg_CO2_per_kg)',0):.4f}", f"{row.get('CO2_Emissions (kg/m3)',0):.3f}"])
+                        try:
+                            base_table_data.append([str(row["Material"]), f"{row['Quantity (kg/m3)']:.2f}", f"{row.get('CO2_Factor(kg_CO2_per_kg)',0):.4f}", f"{row.get('CO2_Emissions (kg/m3)',0):.3f}"])
+                        except Exception:
+                            base_table_data.append([str(row.iloc[0]), f"{row.iloc[1]:.2f}", f"{row.iloc[-2] if len(row.index)>2 else 0:.4f}", f"{row.iloc[-1] if len(row.index)>1 else 0:.3f}"])
                     base_tbl = Table(base_table_data, hAlign="LEFT")
                     base_tbl.setStyle(TableStyle([("GRID", (0,0), (-1,-1), 0.25, colors.grey)]))
                     story.append(base_tbl)
@@ -692,28 +795,26 @@ if st.button("Generate Sustainable Mix"):
                 except Exception as e:
                     pdf_bytes = None
                     st.warning(f"PDF generation failed: {e}")
-                    # show traceback in dev mode (optional)
-                    # st.text(traceback.format_exc())
 
                 # Collapsible downloads section
                 with st.expander("📥 Downloads", expanded=True):
                     st.download_button("📥 Download Optimized Mix (CSV)", data=csv_opt,
-                                       file_name=f"CivilGPT_{grade}_optimized.csv", mime="text/csv")
+                                       file_name=f"CivilGPT_{parsed_grade}_optimized.csv", mime="text/csv")
                     st.download_button("📥 Download Baseline Mix (CSV)", data=csv_base,
-                                       file_name=f"CivilGPT_{grade}_{cement_choice}_baseline.csv", mime="text/csv")
+                                       file_name=f"CivilGPT_{parsed_grade}_{cement_choice}_baseline.csv", mime="text/csv")
                     st.download_button("🧾 Download Optimized Meta (JSON)", data=json.dumps(opt_meta, indent=2),
-                                       file_name=f"CivilGPT_{grade}_optimized_meta.json", mime="application/json")
+                                       file_name=f"CivilGPT_{parsed_grade}_optimized_meta.json", mime="application/json")
                     st.download_button("🧾 Download Baseline Meta (JSON)", data=json.dumps(base_meta, indent=2),
-                                       file_name=f"CivilGPT_{grade}_{cement_choice}_baseline_meta.json", mime="application/json")
+                                       file_name=f"CivilGPT_{parsed_grade}_{cement_choice}_baseline_meta.json", mime="application/json")
                     if excel_bytes is not None:
                         st.download_button("📊 Download Report (Excel)", data=excel_bytes,
-                                           file_name=f"CivilGPT_{grade}_Report.xlsx",
+                                           file_name=f"CivilGPT_{parsed_grade}_Report.xlsx",
                                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                     else:
                         st.write("Excel export not available.")
                     if pdf_bytes is not None:
                         st.download_button("📄 Download Report (PDF)", data=pdf_bytes,
-                                           file_name=f"CivilGPT_{grade}_Report.pdf", mime="application/pdf")
+                                           file_name=f"CivilGPT_{parsed_grade}_Report.pdf", mime="application/pdf")
                     else:
                         st.write("PDF export not available.")
 
@@ -726,3 +827,5 @@ else:
 
 st.markdown("---")
 st.caption("CivilGPT v1.6.5 | Robust dataset loaders + correlation (baseline logic unchanged)")
+
+# End of file
