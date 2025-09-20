@@ -26,8 +26,8 @@ st.set_page_config(
 # =========================
 # Dataset Path Handling
 # =========================
-LAB_FILE = "lab_processed.xlsx"
-MIX_FILE = "concrete_mix_design_data_cleaned.xlsx"
+LAB_FILE = "lab_processed_standardized.xlsx"
+MIX_FILE = "concrete_mix_design_data_cleaned_standardized.xlsx"
 
 def safe_load_excel(name):
     """Try loading Excel robustly from root/ or data/ (case-insensitive)."""
