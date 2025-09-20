@@ -1,4 +1,4 @@
-# app.py — CivilGPT v1.6.5 (adds Mix ↔ Strength correlation)
+# app.py — CivilGPT v1.6.6 (robust dataset path handling)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -68,19 +68,6 @@ QC_STDDEV = {
     "Poor": 10.0,
 }
 
-FINE_AGG_ZONE_LIMITS = {
-    "Zone I":  {"10.0": (100,100),"4.75": (90,100),"2.36": (60,95),"1.18": (30,70),"0.600": (15,34),"0.300": (5,20),"0.150": (0,10)},
-    "Zone II": {"10.0": (100,100),"4.75": (90,100),"2.36": (75,100),"1.18": (55,90),"0.600": (35,59),"0.300": (8,30),"0.150": (0,10)},
-    "Zone III":{"10.0": (100,100),"4.75": (90,100),"2.36": (85,100),"1.18": (75,100),"0.600": (60,79),"0.300": (12,40),"0.150": (0,10)},
-    "Zone IV": {"10.0": (95,100),"4.75": (95,100),"2.36": (95,100),"1.18": (90,100),"0.600": (80,100),"0.300": (15,50),"0.150": (0,15)},
-}
-
-COARSE_LIMITS = {
-    10: {"20.0": (100,100), "10.0": (85,100),  "4.75": (0,20)},
-    20: {"40.0": (95,100),  "20.0": (95,100),  "10.0": (25,55), "4.75": (0,10)},
-    40: {"80.0": (95,100),  "40.0": (95,100),  "20.0": (30,70), "10.0": (0,15)}
-}
-
 # =========================
 # Helpers
 # =========================
@@ -90,22 +77,21 @@ def _read_csv_try(path):
 
 @st.cache_data
 def load_data(materials_file=None, emissions_file=None):
-    materials = None
-    emissions = None
+    materials, emissions = None, None
     if materials_file is not None:
         try:
             materials = pd.read_csv(materials_file)
         except Exception as e:
             st.warning(f"Could not read uploaded materials CSV: {e}")
     if materials is None:
-        try:
-            materials = _read_csv_try("materials_library.csv")
-        except Exception:
+        for p in ["materials_library.csv", "data/materials_library.csv"]:
             try:
-                materials = _read_csv_try("data/materials_library.csv")
-            except Exception:
-                st.warning("Materials CSV not found in repo.")
-                materials = pd.DataFrame(columns=["Material"])
+                materials = pd.read_csv(p)
+                break
+            except: pass
+        if materials is None:
+            st.warning("Materials CSV not found.")
+            materials = pd.DataFrame(columns=["Material"])
 
     if emissions_file is not None:
         try:
@@ -113,34 +99,39 @@ def load_data(materials_file=None, emissions_file=None):
         except Exception as e:
             st.warning(f"Could not read uploaded emission factors CSV: {e}")
     if emissions is None:
-        try:
-            emissions = _read_csv_try("emission_factors.csv")
-        except Exception:
+        for p in ["emission_factors.csv", "data/emission_factors.csv"]:
             try:
-                emissions = _read_csv_try("data/emission_factors.csv")
-            except Exception:
-                st.warning("Emission factors CSV not found in repo.")
-                emissions = pd.DataFrame(columns=["Material","CO2_Factor(kg_CO2_per_kg)"])
+                emissions = pd.read_csv(p)
+                break
+            except: pass
+        if emissions is None:
+            st.warning("Emission factors CSV not found.")
+            emissions = pd.DataFrame(columns=["Material","CO2_Factor(kg_CO2_per_kg)"])
     return materials, emissions
 
 # =========================
-# NEW: Load Real Datasets
+# NEW: Load Real Datasets (robust paths)
 # =========================
 @st.cache_data
 def load_real_datasets():
-    lab_df, mix_df, slump_df = None, None, None
-    try:
-        lab_df = pd.read_excel("data/lab_processed.xlsx")
-    except Exception:
-        st.warning("lab_processed.xlsx not found in data/")
-    try:
-        mix_df = pd.read_excel("data/concrete_mix_design_data_cleaned.xlsx")
-    except Exception:
-        st.warning("concrete_mix_design_data_cleaned.xlsx not found in data/")
-    try:
-        slump_df = pd.read_csv("data/slump_test.data", header=None)
-    except Exception:
-        st.warning("slump_test.data not found in data/")
+    def try_paths(filename, reader):
+        for p in [f"data/{filename}", filename]:
+            try:
+                return reader(p)
+            except: pass
+        return None
+
+    lab_df = try_paths("lab_processed.xlsx", pd.read_excel)
+    mix_df = try_paths("concrete_mix_design_data_cleaned.xlsx", pd.read_excel)
+    slump_df = try_paths("slump_test.data", lambda p: pd.read_csv(p, header=None))
+
+    if lab_df is None:
+        st.warning("lab_processed.xlsx not found in root or data/")
+    if mix_df is None:
+        st.warning("concrete_mix_design_data_cleaned.xlsx not found in root or data/")
+    if slump_df is None:
+        st.warning("slump_test.data not found in root or data/")
+
     return lab_df, mix_df, slump_df
 
 # =========================
@@ -172,9 +163,6 @@ st.markdown(
     "Generates **eco-optimized, IS-style concrete mix designs** and compares against baselines "
     "with CO₂ footprint and compliance checks."
 )
-
-# Sidebar Inputs (unchanged)
-# ... keep all sidebar inputs from v1.6.3
 
 # =========================
 # Load datasets
@@ -210,10 +198,5 @@ with st.expander("📊 Mix ↔ Strength Correlation", expanded=False):
         except Exception as e:
             st.warning(f"Could not plot correlation: {e}")
 
-# =========================
-# Run block (unchanged)
-# =========================
-# ... keep your original run logic from v1.6.3
-
 st.markdown("---")
-st.caption("CivilGPT v1.6.5 | Added Mix ↔ Strength correlation")
+st.caption("CivilGPT v1.6.6 | Robust dataset path handling")
