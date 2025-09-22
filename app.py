@@ -1,5 +1,7 @@
-# app.py — CivilGPT v1.6.5
-# Full drop-in: mix designer + dataset previews + correlation + robust Excel loading + restricted grades/cements
+# app.py — CivilGPT v1.6.5 (Full drop-in, expanded)
+# - Dataset names verified: lab_processed_mgrades_only.xlsx, concrete_mix_design_data_cleaned_standardized.xlsx
+# - Grade range restricted to M10–M50 only (dictionary + UI filtering)
+# - Full single-file copy — no snippets, no truncation
 
 import streamlit as st
 import pandas as pd
@@ -84,9 +86,10 @@ EXPOSURE_MIN_GRADE = {
     "Marine": "M40",
 }
 
+# Restricted grade dictionary (M10 to M50 only)
 GRADE_STRENGTH = {
-    "M10": 10, "M15": 15, "M20": 20, "M25": 25, "M30": 30, "M35": 35, "M40": 40,
-    "M45": 45, "M50": 50, "M55": 55, "M60": 60, "M65": 65, "M70": 70, "M75": 75, "M80": 80
+    "M10": 10, "M15": 15, "M20": 20, "M25": 25, "M30": 30,
+    "M35": 35, "M40": 40, "M45": 45, "M50": 50
 }
 
 WATER_BASELINE = {10: 208, 12.5: 202, 20: 186, 40: 165}
@@ -425,7 +428,7 @@ def generate_baseline(grade, exposure, nom_max, target_slump, agg_shape,
 # =========================
 st.sidebar.header("📝 Mix Inputs")
 
-# Determine supported grades from datasets
+# Determine supported grades from datasets (but restrict to M10-M50)
 supported_grades = []
 try:
     if lab_df is not None:
@@ -440,8 +443,14 @@ try:
 except Exception:
     supported_grades = []
 
-# sanitize
-supported_grades = sorted(set([s.strip() for s in supported_grades if isinstance(s, str)]))
+# sanitize and restrict to allowed grades in GRADE_STRENGTH
+supported_grades = sorted(set([s.strip().upper() for s in supported_grades if isinstance(s, str)]))
+allowed_grades = sorted(GRADE_STRENGTH.keys(), key=lambda x: int(x.lstrip("M")))
+supported_grades = [g for g in supported_grades if g in allowed_grades]
+
+# Fallbacks
+if not supported_grades:
+    supported_grades = allowed_grades.copy()
 
 # Determine supported cement types from mix dataset (if present)
 supported_cements = []
@@ -456,9 +465,7 @@ except Exception:
 
 supported_cements = sorted(set([s.strip() for s in supported_cements if isinstance(s, str)]))
 
-# Fallbacks
-if not supported_grades:
-    supported_grades = list(GRADE_STRENGTH.keys())
+# Fallback cement types
 if not supported_cements:
     supported_cements = ["OPC 33", "OPC 43", "OPC 53", "PPC"]
 
@@ -506,7 +513,7 @@ if emissions_df is None or emissions_df.shape[0] == 0:
 # Dataset Previews & Correlation
 # =========================
 st.header("CivilGPT — Sustainable Concrete Mix Designer")
-st.markdown("Upload materials/emissions CSV to override defaults. Mix generation will use datasets in repo if available.")
+st.markdown("Upload materials/emissions CSV to override defaults. Mix generation will use datasets in repo if available. UI restricted to grades M10–M50.")
 
 with st.expander("📁 Current dataset preview (Lab)"):
     if lab_df is None:
@@ -556,18 +563,16 @@ if st.button("Generate Sustainable Mix"):
             parsed_grade = grade
             if isinstance(parsed_grade, str) and parsed_grade.upper().startswith("M"):
                 try:
-                    # normalize like 'M20' -> 'M20' (already)
                     parsed_grade = parsed_grade.strip().upper()
                 except Exception:
                     parsed_grade = parsed_grade
             if parsed_grade not in grade_order:
-                # fallback: choose nearest lower grade if possible
+                # fallback: choose nearest lower grade if possible (within allowed list)
                 try:
                     if isinstance(parsed_grade, str) and parsed_grade.upper().startswith("M"):
                         gnum = int(parsed_grade.lstrip("M"))
-                        # find closest available
+                        # find smallest available >= gnum
                         available_nums = [int(g.lstrip("M")) for g in grade_order]
-                        # choose smallest >= gnum or max available
                         chosen = None
                         for n in sorted(available_nums):
                             if n >= gnum:
@@ -579,7 +584,23 @@ if st.button("Generate Sustainable Mix"):
                 except Exception:
                     parsed_grade = grade_order[0]
 
-            # enforce minimum grade per exposure
+            # enforce minimum grade per exposure (ensure min grade is within allowed list)
+            if min_grade_required not in grade_order:
+                # if the exposure's min grade is outside allowed, pick the minimal allowed that is >= exposure requirement
+                try:
+                    min_req_num = int(EXPOSURE_MIN_GRADE[exposure].lstrip("M"))
+                    available_nums = [int(g.lstrip("M")) for g in grade_order]
+                    chosen = None
+                    for n in sorted(available_nums):
+                        if n >= min_req_num:
+                            chosen = f"M{n}"
+                            break
+                    if chosen is None:
+                        chosen = grade_order[-1]
+                    min_grade_required = chosen
+                except Exception:
+                    min_grade_required = grade_order[0]
+
             if grade_order.index(parsed_grade) < grade_order.index(min_grade_required):
                 st.warning(f"Exposure **{exposure}** requires minimum grade **{min_grade_required}** by IS 456. Proceeding with {min_grade_required}.")
                 parsed_grade = min_grade_required
@@ -826,6 +847,6 @@ else:
     st.info("Set parameters and click **Generate Sustainable Mix**.")
 
 st.markdown("---")
-st.caption("CivilGPT v1.6.5 | Robust dataset loaders + correlation (baseline logic unchanged)")
+st.caption("CivilGPT v1.6.5 | Robust dataset loaders + correlation (grades limited to M10–M50)")
 
 # End of file
