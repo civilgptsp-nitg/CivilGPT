@@ -560,13 +560,44 @@ if st.button("Generate Sustainable Mix (v1.8)"):
             k3.metric("📉 CO₂ Reduction", f"{reduction:.1f}%")
             k4.metric("💰 Cost Δ", f"{cost_diff:+.2f} ₹/m³")
 
-            # Compliance
-            st.markdown("### ✅ Compliance Checks")
-            checks, derived = compliance_checks(opt_df, opt_meta, exposure)
-            st.table(compliance_table(checks))
-            st.json(derived)
+            # =========================
+            # Detailed Compliance Displays (restored)
+            # =========================
+            st.markdown("### ✅ Assumptions, Strength & Compliance")
 
-            # Optimizer trace
+            # Optimized mix details
+            opt_checks, opt_derived = compliance_checks(opt_df, opt_meta, exposure)
+            with st.expander("Optimized Mix — Details", expanded=False):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.json(opt_derived)
+                    st.caption(f"Entrapped air assumed: {air_pct:.1f} %")
+                    try:
+                        fa_free_w, _ = aggregate_correction(fa_moist - fa_abs, opt_meta["fine"])
+                        ca_free_w, _ = aggregate_correction(ca_moist - ca_abs, opt_meta["coarse"])
+                        st.write(f"Free water (report): {fa_free_w + ca_free_w:.1f} kg/m³")
+                    except: st.write("Free water (report): N/A")
+                with c2:
+                    st.table(compliance_table(opt_checks))
+
+            # Baseline mix details
+            base_checks, base_derived = compliance_checks(base_df, base_meta, exposure)
+            with st.expander("Baseline Mix — Details", expanded=False):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.json(base_derived)
+                    st.caption(f"Entrapped air assumed: {air_pct:.1f} %")
+                    try:
+                        fa_free_w_b, _ = aggregate_correction(fa_moist - fa_abs, base_meta["fine"])
+                        ca_free_w_b, _ = aggregate_correction(ca_moist - ca_abs, base_meta["coarse"])
+                        st.write(f"Free water (report): {fa_free_w_b + ca_free_w_b:.1f} kg/m³")
+                    except: st.write("Free water (report): N/A")
+                with c2:
+                    st.table(compliance_table(base_checks))
+
+            # =========================
+            # Optimizer Trace
+            # =========================
             st.markdown("### 🔍 Optimizer Trace (Top 5)")
             trace_df = pd.DataFrame(trace).sort_values("score").head(5)
             st.dataframe(trace_df, use_container_width=True)
@@ -649,4 +680,4 @@ else:
     st.info("Set parameters and click **Generate Sustainable Mix (v1.8)**.")
 
 st.markdown("---")
-st.caption("CivilGPT v1.8 | Full merged · IS-code compliant · Groq parser · Cost optimization · Volume balance · Optimizer trace · Reports")
+st.caption("CivilGPT v1.8 | Full merged · IS-code compliant · Groq parser · Cost optimization · Volume balance · Optimizer trace · Detailed compliance · Reports")
