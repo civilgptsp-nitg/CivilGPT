@@ -699,12 +699,7 @@ if st.button("Generate Sustainable Mix (v1.8)"):
                             st.write("⚠️ " + w)
 
 
-            # =========================
-            # Optimizer Trace
-            # =========================
-            st.markdown("### 🔍 Optimizer Trace (Top 5)")
-            trace_df = pd.DataFrame(trace).sort_values("score").head(5)
-            st.dataframe(trace_df, use_container_width=True)
+            
 
             # Moisture corrections
             st.markdown("### 💧 Moisture Corrections")
@@ -785,6 +780,7 @@ else:
 
 st.markdown("---")
 st.caption("CivilGPT v1.8 | Full merged · IS-code compliant · Groq parser · Cost optimization · Volume balance · Optimizer trace · Detailed compliance · Reports")
+
 
 
 
