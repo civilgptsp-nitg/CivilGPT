@@ -314,6 +314,84 @@ def sieve_check_ca(df: pd.DataFrame, nominal_mm: int):
         if ok and not msgs: msgs = [f"Coarse aggregate meets IS 383 ({nominal_mm} mm graded)."]
         return ok, msgs
     except: return False, ["Invalid coarse aggregate CSV format. Expected columns: Sieve_mm, PercentPassing"]
+
+
+# =========================
+# Sanity Check Helper
+# =========================
+def sanity_check_mix(meta, df):
+    """
+    Runs IS 10262/456 based sanity checks on key quantities.
+    Returns a list of warning strings if values are suspicious.
+    """
+    warnings = []
+
+    cement = float(meta.get("cement", 0))
+    water = float(meta.get("water_target", 0))
+    fine = float(meta.get("fine", 0))
+    coarse = float(meta.get("coarse", 0))
+    sp = float(meta.get("sp", 0))
+    unit_wt = float(df["Quantity (kg/m3)"].sum())
+
+    # Cementitious material check
+    if cement < 250:
+        warnings.append(f"Cement too low ({cement:.1f} kg/m³) — IS 456 min is 300–360 depending on exposure.")
+    if cement > 500:
+        warnings.append(f"Cement unusually high ({cement:.1f} kg/m³) — may cause shrinkage/cracking.")
+
+    # Water check
+    if water < 140 or water > 220:
+        warnings.append(f"Water out of typical range ({water:.1f} kg/m³).")
+
+    # Fine aggregate check
+    if fine < 500 or fine > 900:
+        warnings.append(f"Fine aggregate unusual ({fine:.1f} kg/m³).")
+
+    # Coarse aggregate check
+    if coarse < 1000 or coarse > 1300:
+        warnings.append(f"Coarse aggregate unusual ({coarse:.1f} kg/m³).")
+
+    # Superplasticizer check
+    if sp > 20:
+        warnings.append(f"SP dosage unusually high ({sp:.1f} kg/m³).")
+
+    # Unit weight check
+    if unit_wt < 2200 or unit_wt > 2600:
+        warnings.append(f"Unit weight {unit_wt:.1f} kg/m³ outside IS 10262 range (2200–2600).")
+
+    return warnings
+
+
+# =========================
+# Sanity Check Helper
+# =========================
+def sanity_check_mix(meta, df):
+    warnings = []
+    cement = float(meta.get("cement", 0))
+    water = float(meta.get("water_target", 0))
+    fine = float(meta.get("fine", 0))
+    coarse = float(meta.get("coarse", 0))
+    sp = float(meta.get("sp", 0))
+    unit_wt = float(df["Quantity (kg/m3)"].sum())
+
+    if cement < 250:
+        warnings.append(f"Cement too low ({cement:.1f} kg/m³) — IS 456 min is 300–360 depending on exposure.")
+    if cement > 500:
+        warnings.append(f"Cement unusually high ({cement:.1f} kg/m³).")
+    if water < 140 or water > 220:
+        warnings.append(f"Water out of typical range ({water:.1f} kg/m³).")
+    if fine < 500 or fine > 900:
+        warnings.append(f"Fine aggregate unusual ({fine:.1f} kg/m³).")
+    if coarse < 1000 or coarse > 1300:
+        warnings.append(f"Coarse aggregate unusual ({coarse:.1f} kg/m³).")
+    if sp > 20:
+        warnings.append(f"SP dosage unusually high ({sp:.1f} kg/m³).")
+    if unit_wt < 2200 or unit_wt > 2600:
+        warnings.append(f"Unit weight {unit_wt:.1f} kg/m³ outside IS 10262 range (2200–2600).")
+
+    return warnings
+
+
 # =========================
 # Mix Generators (IS-code compliant + trace)
 # =========================
@@ -593,6 +671,12 @@ if st.button("Generate Sustainable Mix (v1.8)"):
                     except: st.write("Free water (report): N/A")
                 with c2:
                     st.table(compliance_table(opt_checks))
+                    warnings = sanity_check_mix(opt_meta, opt_df)
+                    if warnings:
+                        st.warning("Sanity Check Warnings:")
+                        for w in warnings:
+                            st.write("⚠️ " + w)
+
 
             # Baseline mix details
             base_checks, base_derived = compliance_checks(base_df, base_meta, exposure)
@@ -608,6 +692,12 @@ if st.button("Generate Sustainable Mix (v1.8)"):
                     except: st.write("Free water (report): N/A")
                 with c2:
                     st.table(compliance_table(base_checks))
+                    warnings = sanity_check_mix(base_meta, base_df)
+                    if warnings:
+                         st.warning("Sanity Check Warnings:")
+                        for w in warnings:
+                            st.write("⚠️ " + w)
+
 
             # =========================
             # Optimizer Trace
@@ -695,4 +785,5 @@ else:
 
 st.markdown("---")
 st.caption("CivilGPT v1.8 | Full merged · IS-code compliant · Groq parser · Cost optimization · Volume balance · Optimizer trace · Detailed compliance · Reports")
+
 
