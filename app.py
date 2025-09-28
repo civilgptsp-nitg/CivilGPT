@@ -695,8 +695,8 @@ if st.button("Generate Sustainable Mix (v1.8)"):
                     warnings = sanity_check_mix(base_meta, base_df)
                     if warnings:
                          st.warning("Sanity Check Warnings:")
-                        for w in warnings:
-                            st.write("⚠️ " + w)
+                            for w in warnings:
+                                st.write("⚠️ " + w)
 
 
             # =========================
@@ -785,5 +785,6 @@ else:
 
 st.markdown("---")
 st.caption("CivilGPT v1.8 | Full merged · IS-code compliant · Groq parser · Cost optimization · Volume balance · Optimizer trace · Detailed compliance · Reports")
+
 
 
