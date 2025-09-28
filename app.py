@@ -294,6 +294,13 @@ def compliance_checks(mix_df, meta, exposure):
         "QC (S, MPa)": meta.get("stddev_S"),
     }
     return checks, derived
+    
+
+
+def compliance_table(checks: dict) -> pd.DataFrame:
+    df = pd.DataFrame(list(checks.items()), columns=["Check", "Status"])
+    df["Result"] = df["Status"].apply(lambda x: "✅ Pass" if x else "❌ Fail")
+    return df[["Check", "Result"]]
 
 # =========================
 # Sanity Check Helper
@@ -840,3 +847,4 @@ else:
 
 st.markdown("---")
 st.caption("CivilGPT v1.9 | Clarification flow · Feasibility checks · Optional trace | Groq Mixtral")
+
