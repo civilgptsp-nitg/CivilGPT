@@ -1,9 +1,9 @@
-# app.py — CivilGPT v1.8 (Full merged, IS-code compliant)
-# - Based on v1.7 (all features preserved)
-# - Upgrades: Groq LLM parser + Cost optimization + Volume balance + Optimizer trace
-# - Restored IS 10262 / IS 456 compliance (water demand, SP, min grade, reporting)
-# - Full reporting: CSV, Excel, JSON, PDF
-# - Line count ≈ 900+
+# app.py — CivilGPT v1.9 (Clarification flow + unified feasibility + optional trace)
+# - Based on v1.8 (all features preserved)
+# - New in v1.9: clarification flow when LLM parser misses required fields,
+#   unified check_feasibility() function used by optimizer to skip invalid candidates,
+#   optional optimizer trace returned to UI (hidden by default),
+#   positive message when all checks pass.
 
 import streamlit as st
 import pandas as pd
@@ -22,7 +22,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 # Groq client
 try:
     from groq import Groq
-    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+    client = Groq(api_key=st.secrets.get("GROQ_API_KEY", None))
 except Exception:
     client = None
 
@@ -124,7 +124,17 @@ def simple_parse(text: str) -> dict:
         if re.search(ctype.replace(" ", r"\s*"), text, re.IGNORECASE):
             result["cement"] = ctype; break
 
+    # try capture nominal max aggregate like "20mm" or "20 mm"
+    nom_match = re.search(r"(10|12\.5|20|40)\s*-?\s*mm", text, re.IGNORECASE)
+    if nom_match:
+        try:
+            val = float(nom_match.group(1))
+            result["nom_max"] = val
+        except:
+            pass
+
     return result
+
 
 def parse_input_with_llm(user_text: str) -> dict:
     if client is None:
@@ -180,6 +190,7 @@ def water_for_slump_and_shape(nom_max_mm: int, slump_mm: int,
     water *= (1.0 + AGG_SHAPE_WATER_ADJ.get(agg_shape, 0.0))
     if uses_sp and sp_reduction_frac > 0: water *= (1 - sp_reduction_frac)
     return float(water)
+
 # =========================
 # Mix Evaluation
 # =========================
@@ -255,15 +266,22 @@ def compliance_checks(mix_df, meta, exposure):
         checks["Min cementitious met"] = float(meta["cementitious"]) >= float(EXPOSURE_MIN_CEMENT[exposure])
     except: checks["Min cementitious met"] = False
 
-    checks["SCM ≤ 50%"] = float(meta.get("scm_total_frac", 0.0)) <= 0.50
-    total_mass = float(mix_df["Quantity (kg/m3)"].sum())
-    checks["Unit weight 2200–2600 kg/m³"] = 2200.0 <= total_mass <= 2600.0
+    try:
+        checks["SCM ≤ 50%"] = float(meta.get("scm_total_frac", 0.0)) <= 0.50
+    except:
+        checks["SCM ≤ 50%"] = False
+
+    try:
+        total_mass = float(mix_df["Quantity (kg/m3)"].sum())
+        checks["Unit weight 2200–2600 kg/m³"] = 2200.0 <= total_mass <= 2600.0
+    except:
+        checks["Unit weight 2200–2600 kg/m³"] = False
 
     derived = {
         "w/b used": round(float(meta.get("w_b", 0.0)), 3),
         "cementitious (kg/m³)": round(float(meta.get("cementitious", 0.0)), 1),
         "SCM % of cementitious": round(100 * float(meta.get("scm_total_frac", 0.0)), 1),
-        "total mass (kg/m³)": round(total_mass, 1),
+        "total mass (kg/m³)": round(float(mix_df["Quantity (kg/m3)"].sum()), 1) if "Quantity (kg/m3)" in mix_df.columns else None,
         "water target (kg/m³)": round(float(meta.get("water_target", 0.0)), 1),
         "cement (kg/m³)": round(float(meta.get("cement", 0.0)), 1),
         "fly ash (kg/m³)": round(float(meta.get("flyash", 0.0)), 1),
@@ -277,10 +295,58 @@ def compliance_checks(mix_df, meta, exposure):
     }
     return checks, derived
 
-def compliance_table(checks: dict) -> pd.DataFrame:
-    df = pd.DataFrame(list(checks.items()), columns=["Check", "Status"])
-    df["Result"] = df["Status"].apply(lambda x: "✅ Pass" if x else "❌ Fail")
-    return df[["Check", "Result"]]
+# =========================
+# Sanity Check Helper
+# =========================
+def sanity_check_mix(meta, df):
+    warnings = []
+    try:
+        cement = float(meta.get("cement", 0))
+        water = float(meta.get("water_target", 0))
+        fine = float(meta.get("fine", 0))
+        coarse = float(meta.get("coarse", 0))
+        sp = float(meta.get("sp", 0))
+        unit_wt = float(df["Quantity (kg/m3)"].sum())
+    except Exception:
+        # if something missing, return a warning
+        return ["Insufficient data to run sanity checks."]
+
+    if cement < 250:
+        warnings.append(f"Cement too low ({cement:.1f} kg/m³) — IS 456 min is 300–360 depending on exposure.")
+    if cement > 500:
+        warnings.append(f"Cement unusually high ({cement:.1f} kg/m³).")
+    if water < 140 or water > 220:
+        warnings.append(f"Water out of typical range ({water:.1f} kg/m³).")
+    if fine < 500 or fine > 900:
+        warnings.append(f"Fine aggregate unusual ({fine:.1f} kg/m³).")
+    if coarse < 1000 or coarse > 1300:
+        warnings.append(f"Coarse aggregate unusual ({coarse:.1f} kg/m³).")
+    if sp > 20:
+        warnings.append(f"SP dosage unusually high ({sp:.1f} kg/m³).")
+    if unit_wt < 2200 or unit_wt > 2600:
+        warnings.append(f"Unit weight {unit_wt:.1f} kg/m³ outside IS 10262 range (2200–2600).")
+
+    return warnings
+
+# =========================
+# Unified Feasibility Function
+# =========================
+def check_feasibility(mix_df, meta, exposure):
+    """
+    Returns: (feasible: bool, reasons: list[str], derived: dict, checks: dict)
+    Combines compliance checks and sanity checks to provide a consolidated decision.
+    """
+    checks, derived = compliance_checks(mix_df, meta, exposure)
+    warnings = sanity_check_mix(meta, mix_df)
+
+    reasons = []
+    for k, v in checks.items():
+        if not v:
+            reasons.append(f"Failed check: {k}")
+    reasons.extend(warnings)
+
+    feasible = len(reasons) == 0
+    return feasible, reasons, derived, checks
 
 # =========================
 # Sieve Checks
@@ -314,83 +380,6 @@ def sieve_check_ca(df: pd.DataFrame, nominal_mm: int):
         if ok and not msgs: msgs = [f"Coarse aggregate meets IS 383 ({nominal_mm} mm graded)."]
         return ok, msgs
     except: return False, ["Invalid coarse aggregate CSV format. Expected columns: Sieve_mm, PercentPassing"]
-
-
-# =========================
-# Sanity Check Helper
-# =========================
-def sanity_check_mix(meta, df):
-    """
-    Runs IS 10262/456 based sanity checks on key quantities.
-    Returns a list of warning strings if values are suspicious.
-    """
-    warnings = []
-
-    cement = float(meta.get("cement", 0))
-    water = float(meta.get("water_target", 0))
-    fine = float(meta.get("fine", 0))
-    coarse = float(meta.get("coarse", 0))
-    sp = float(meta.get("sp", 0))
-    unit_wt = float(df["Quantity (kg/m3)"].sum())
-
-    # Cementitious material check
-    if cement < 250:
-        warnings.append(f"Cement too low ({cement:.1f} kg/m³) — IS 456 min is 300–360 depending on exposure.")
-    if cement > 500:
-        warnings.append(f"Cement unusually high ({cement:.1f} kg/m³) — may cause shrinkage/cracking.")
-
-    # Water check
-    if water < 140 or water > 220:
-        warnings.append(f"Water out of typical range ({water:.1f} kg/m³).")
-
-    # Fine aggregate check
-    if fine < 500 or fine > 900:
-        warnings.append(f"Fine aggregate unusual ({fine:.1f} kg/m³).")
-
-    # Coarse aggregate check
-    if coarse < 1000 or coarse > 1300:
-        warnings.append(f"Coarse aggregate unusual ({coarse:.1f} kg/m³).")
-
-    # Superplasticizer check
-    if sp > 20:
-        warnings.append(f"SP dosage unusually high ({sp:.1f} kg/m³).")
-
-    # Unit weight check
-    if unit_wt < 2200 or unit_wt > 2600:
-        warnings.append(f"Unit weight {unit_wt:.1f} kg/m³ outside IS 10262 range (2200–2600).")
-
-    return warnings
-
-
-# =========================
-# Sanity Check Helper
-# =========================
-def sanity_check_mix(meta, df):
-    warnings = []
-    cement = float(meta.get("cement", 0))
-    water = float(meta.get("water_target", 0))
-    fine = float(meta.get("fine", 0))
-    coarse = float(meta.get("coarse", 0))
-    sp = float(meta.get("sp", 0))
-    unit_wt = float(df["Quantity (kg/m3)"].sum())
-
-    if cement < 250:
-        warnings.append(f"Cement too low ({cement:.1f} kg/m³) — IS 456 min is 300–360 depending on exposure.")
-    if cement > 500:
-        warnings.append(f"Cement unusually high ({cement:.1f} kg/m³).")
-    if water < 140 or water > 220:
-        warnings.append(f"Water out of typical range ({water:.1f} kg/m³).")
-    if fine < 500 or fine > 900:
-        warnings.append(f"Fine aggregate unusual ({fine:.1f} kg/m³).")
-    if coarse < 1000 or coarse > 1300:
-        warnings.append(f"Coarse aggregate unusual ({coarse:.1f} kg/m³).")
-    if sp > 20:
-        warnings.append(f"SP dosage unusually high ({sp:.1f} kg/m³).")
-    if unit_wt < 2200 or unit_wt > 2600:
-        warnings.append(f"Unit weight {unit_wt:.1f} kg/m³ outside IS 10262 range (2200–2600).")
-
-    return warnings
-
 
 # =========================
 # Mix Generators (IS-code compliant + trace)
@@ -445,25 +434,32 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape,
                 co2_total = float(df["CO2_Emissions (kg/m3)"].sum())
                 cost_total = float(df["Cost (₹/m3)"].sum())
 
+                # candidate meta for feasibility checking
+                candidate_meta = {
+                    "w_b": wb, "cementitious": binder, "cement": cement,
+                    "flyash": flyash, "ggbs": ggbs, "water_target": target_water,
+                    "sp": sp, "fine": fine, "coarse": coarse,
+                    "scm_total_frac": flyash_frac + ggbs_frac,
+                    "grade": grade, "exposure": exposure,
+                    "nom_max": nom_max, "slump": target_slump,
+                    "co2_total": co2_total, "cost_total": cost_total
+                }
+
+                # feasibility check
+                feasible, reasons, derived, checks = check_feasibility(df, candidate_meta, exposure)
+
                 score = co2_total if not optimize_cost else co2_total + 0.001 * cost_total
 
                 trace.append({
-                    "wb": wb, "flyash_frac": flyash_frac, "ggbs_frac": ggbs_frac,
-                    "co2": co2_total, "cost": cost_total, "score": score
+                    "wb": float(wb), "flyash_frac": float(flyash_frac), "ggbs_frac": float(ggbs_frac),
+                    "co2": float(co2_total), "cost": float(cost_total), "score": float(score),
+                    "feasible": bool(feasible), "reasons": reasons
                 })
 
-                if score < best_score:
+                if feasible and score < best_score:
                     best_df = df.copy()
                     best_score = score
-                    best_meta = {
-                        "w_b": wb, "cementitious": binder, "cement": cement,
-                        "flyash": flyash, "ggbs": ggbs, "water_target": target_water,
-                        "sp": sp, "fine": fine, "coarse": coarse,
-                        "scm_total_frac": flyash_frac + ggbs_frac,
-                        "grade": grade, "exposure": exposure,
-                        "nom_max": nom_max, "slump": target_slump,
-                        "co2_total": co2_total, "cost_total": cost_total
-                    }
+                    best_meta = candidate_meta.copy()
 
     return best_df, best_meta, trace
 
@@ -519,6 +515,9 @@ st.sidebar.header("📝 Mix Inputs")
 user_text = st.sidebar.text_area("Describe your mix in English (optional)", height=100)
 use_llm_parser = st.sidebar.checkbox("Use Groq LLM Parser", value=False)
 
+# Trace toggle (optional, hidden by default)
+show_trace = st.sidebar.checkbox("Show optimizer trace (advanced)", value=False)
+
 # Grade + exposure
 grade = st.sidebar.selectbox("Concrete Grade", list(GRADE_STRENGTH.keys()), index=2)
 exposure = st.sidebar.selectbox("Exposure Condition", list(EXPOSURE_WB_LIMITS.keys()), index=2)
@@ -557,12 +556,13 @@ cost_file = st.sidebar.file_uploader("cost_factors.csv", type=["csv"], key="cost
 
 # Load datasets
 materials_df, emissions_df, costs_df = load_data(materials_file, emissions_file, cost_file)
+
 # =========================
-# Parser Override
+# Parser Override (updated to return parsed too)
 # =========================
 def apply_parser(user_text, current_inputs):
     if not user_text.strip():
-        return current_inputs, []
+        return current_inputs, [], {}
     try:
         parsed = parse_input_with_llm(user_text) if use_llm_parser else simple_parse(user_text)
     except Exception as e:
@@ -583,24 +583,67 @@ def apply_parser(user_text, current_inputs):
     if "nom_max" in parsed and parsed["nom_max"] in [10, 12.5, 20, 40]:
         updated["nom_max"] = parsed["nom_max"]; messages.append(f"Parser set agg size → {parsed['nom_max']} mm")
 
-    return updated, messages
+    return updated, messages, parsed
 
 # =========================
 # Main Run Button
 # =========================
-st.header("CivilGPT — Sustainable Concrete Mix Designer (v1.8)")
-st.markdown("**Upgrades:** Groq LLM parser · Cost optimization · Aggregate volume balance · Optimizer trace · Full IS 10262/456 compliance.")
+st.header("CivilGPT — Sustainable Concrete Mix Designer (v1.9)")
+st.markdown("**v1.9:** Clarification flow · Unified feasibility checks · Optional optimizer trace (advanced)")
 
-if st.button("Generate Sustainable Mix (v1.8)"):
+if st.button("Generate Sustainable Mix (v1.9)"):
     try:
         inputs = {
             "grade": grade, "exposure": exposure, "cement_choice": cement_choice,
             "nom_max": nom_max, "agg_shape": agg_shape, "target_slump": target_slump,
             "use_sp": use_sp, "optimize_cost": optimize_cost, "fine_fraction": fine_fraction
         }
-        inputs, msgs = apply_parser(user_text, inputs)
+        inputs, msgs, parsed = apply_parser(user_text, inputs)
         for m in msgs: st.info(m)
 
+        # Clarification flow (only when user explicitly chose LLM parser and supplied text)
+        if use_llm_parser and user_text.strip():
+            # required parsed keys
+            required = {"grade":"grade", "exposure":"exposure", "slump":"slump", "nom_max":"nom_max"}
+            missing = []
+            for k in ["grade","exposure","slump","nom_max"]:
+                if k not in parsed:
+                    missing.append(k)
+
+            if missing:
+                st.warning(f"Parser couldn't extract: {', '.join(missing)}. Please provide the missing fields below (one-shot).")
+                with st.form("clarify_form"):
+                    # show only missing widgets, prefilled from inputs
+                    if "grade" in missing:
+                        c_grade = st.selectbox('Concrete Grade', list(GRADE_STRENGTH.keys()), index=list(GRADE_STRENGTH.keys()).index(inputs['grade']))
+                    else:
+                        c_grade = inputs['grade']
+                    if "exposure" in missing:
+                        c_exposure = st.selectbox('Exposure Condition', list(EXPOSURE_WB_LIMITS.keys()), index=list(EXPOSURE_WB_LIMITS.keys()).index(inputs['exposure']))
+                    else:
+                        c_exposure = inputs['exposure']
+                    if "slump" in missing:
+                        c_slump = st.slider('Target slump (mm)', 25, 180, inputs['target_slump'], step=5)
+                    else:
+                        c_slump = inputs['target_slump']
+                    if "nom_max" in missing:
+                        c_nom_max = st.selectbox('Nominal max aggregate (mm)', [10, 12.5, 20, 40], index=[10,12.5,20,40].index(inputs['nom_max']))
+                    else:
+                        c_nom_max = inputs['nom_max']
+
+                    submit = st.form_submit_button("Submit clarification and regenerate")
+
+                if not submit:
+                    # stop execution until user provides clarification
+                    st.stop()
+
+                # update inputs with clarified values
+                inputs['grade'] = c_grade
+                inputs['exposure'] = c_exposure
+                inputs['target_slump'] = c_slump
+                inputs['nom_max'] = c_nom_max
+
+        # proceed with inputs
         grade, exposure, cement_choice = inputs["grade"], inputs["exposure"], inputs["cement_choice"]
         nom_max, agg_shape, target_slump = inputs["nom_max"], inputs["agg_shape"], inputs["target_slump"]
         use_sp, optimize_cost, fine_fraction = inputs["use_sp"], inputs["optimize_cost"], inputs["fine_fraction"]
@@ -659,6 +702,9 @@ if st.button("Generate Sustainable Mix (v1.8)"):
 
             # Optimized mix details
             opt_checks, opt_derived = compliance_checks(opt_df, opt_meta, exposure)
+            # use unified feasibility for positive/negative message
+            opt_feasible, opt_reasons, opt_derived_full, opt_checks_full = check_feasibility(opt_df, opt_meta, exposure)
+
             with st.expander("Optimized Mix — Details", expanded=False):
                 c1, c2 = st.columns(2)
                 with c1:
@@ -676,10 +722,14 @@ if st.button("Generate Sustainable Mix (v1.8)"):
                         st.warning("Sanity Check Warnings:")
                         for w in warnings:
                             st.write("⚠️ " + w)
+                    else:
+                        st.success("✅ Optimized mix passes all sanity & IS compliance checks.")
 
 
             # Baseline mix details
             base_checks, base_derived = compliance_checks(base_df, base_meta, exposure)
+            base_feasible, base_reasons, base_derived_full, base_checks_full = check_feasibility(base_df, base_meta, exposure)
+
             with st.expander("Baseline Mix — Details", expanded=False):
                 c1, c2 = st.columns(2)
                 with c1:
@@ -697,9 +747,8 @@ if st.button("Generate Sustainable Mix (v1.8)"):
                         st.warning("Sanity Check Warnings:")
                         for w in warnings:
                             st.write("⚠️ " + w)
-
-
-            
+                    else:
+                        st.success("✅ Baseline mix passes all sanity & IS compliance checks.")
 
             # Moisture corrections
             st.markdown("### 💧 Moisture Corrections")
@@ -726,6 +775,17 @@ if st.button("Generate Sustainable Mix (v1.8)"):
                     for m in msgs_ca: st.write(("✅ " if ok_ca else "❌ ") + m)
                 except Exception as e: st.warning(f"Coarse sieve error: {e}")
             else: st.info("Coarse sieve CSV not provided.")
+
+            # =========================
+            # Optimizer Trace (optional)
+            # =========================
+            if show_trace and trace:
+                st.markdown("### 🔍 Optimizer Trace (all evaluated candidates)")
+                try:
+                    trace_df = pd.DataFrame(trace)
+                    st.dataframe(trace_df, use_container_width=True)
+                except Exception:
+                    st.write(trace)
 
             # CO₂ plot
             st.markdown("### 📊 CO₂ Comparison")
@@ -776,12 +836,7 @@ if st.button("Generate Sustainable Mix (v1.8)"):
         st.error(f"Error: {e}")
         st.text(traceback.format_exc())
 else:
-    st.info("Set parameters and click **Generate Sustainable Mix (v1.8)**.")
+    st.info("Set parameters and click **Generate Sustainable Mix (v1.9)**.")
 
 st.markdown("---")
-st.caption("CivilGPT v1.8 | Full merged · IS-code compliant · Groq parser · Cost optimization · Volume balance · Optimizer trace · Detailed compliance · Reports")
-
-
-
-
-
+st.caption("CivilGPT v1.9 | Clarification flow · Feasibility checks · Optional trace | Groq Mixtral")
