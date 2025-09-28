@@ -33,5 +33,5 @@ jobs:
         with:
           name: test-results
           path: |
-            results_test.json
-            results_test.csv
+            ./results_test.json
+            ./results_test.csv
