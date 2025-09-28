@@ -211,22 +211,36 @@ def aggregate_correction(delta_moisture_pct: float, agg_mass_ssd: float):
 # Aggregate Volume Balance
 # =========================
 def compute_aggregates(cementitious, water, sp, fine_fraction=0.40,
-                       density_fa=2650, density_ca=2700):
-    volume_cem = cementitious / 3150
-    volume_wat = water / 1000
-    volume_sp = sp / 1200
-    vol_binder = volume_cem + volume_wat + volume_sp
+                       density_fa=2650.0, density_ca=2700.0):
+    """
+    Compute aggregate masses (kg/m³) by volume method (per 1 m³ concrete).
+    - Inputs: cementitious, water, sp are in kg/m³.
+    - Densities are in kg/m³ (typical: fa ~2650, ca ~2700).
+    Returns: (mass_fine_kg_per_m3, mass_coarse_kg_per_m3)
+    """
+    # volumes (m³) of binder components (per m³ concrete)
+    vol_cem = cementitious / 3150.0     # cement density ~3150 kg/m³
+    vol_wat = water / 1000.0            # water: 1000 kg/m³
+    vol_sp  = sp / 1200.0               # SP density ~1200 kg/m³ (approx)
 
+    vol_binder = vol_cem + vol_wat + vol_sp
+
+    # available aggregate volume (m³) in 1 m³ concrete
     total_vol = 1.0
     vol_agg = total_vol - vol_binder
-    if vol_agg <= 0: vol_agg = 0.6
+
+    # fallback if binder volume exceeds 1 m³ (shouldn't happen normally)
+    if vol_agg <= 0:
+        vol_agg = 0.60  # reasonable fallback
 
     vol_fine = vol_agg * fine_fraction
-    vol_coarse = vol_agg * (1 - fine_fraction)
+    vol_coarse = vol_agg * (1.0 - fine_fraction)
 
-    mass_fine = vol_fine * density_fa * 1000
-    mass_coarse = vol_coarse * density_ca * 1000
-    return mass_fine, mass_coarse
+    # mass = volume (m³) * density (kg/m³) -> kg
+    mass_fine = vol_fine * density_fa
+    mass_coarse = vol_coarse * density_ca
+
+    return float(mass_fine), float(mass_coarse)
 
 # =========================
 # Compliance Checks
@@ -681,3 +695,4 @@ else:
 
 st.markdown("---")
 st.caption("CivilGPT v1.8 | Full merged · IS-code compliant · Groq parser · Cost optimization · Volume balance · Optimizer trace · Detailed compliance · Reports")
+
