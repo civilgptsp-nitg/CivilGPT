@@ -190,20 +190,38 @@ def water_for_slump_and_shape(nom_max_mm: int, slump_mm: int,
 # Mix Evaluation
 # =========================
 def evaluate_mix(components_dict, emissions_df, costs_df=None):
-    comp_df = pd.DataFrame(list(components_dict.items()), columns=["Material", "Quantity (kg/m3)"])
-    df = comp_df.merge(emissions_df, on="Material", how="left")
+    # Normalize keys in components_dict
+    comp_items = [(m.strip().lower(), q) for m, q in components_dict.items()]
+    comp_df = pd.DataFrame(comp_items, columns=["Material_norm", "Quantity (kg/m3)"])
+
+    # Normalize emissions dataset
+    emissions_df = emissions_df.copy()
+    emissions_df["Material_norm"] = emissions_df["Material"].str.strip().str.lower()
+
+    df = comp_df.merge(emissions_df[["Material_norm","CO2_Factor(kg_CO2_per_kg)"]],
+                       on="Material_norm", how="left")
+
     if "CO2_Factor(kg_CO2_per_kg)" not in df.columns:
         df["CO2_Factor(kg_CO2_per_kg)"] = 0.0
     df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
     df["CO2_Emissions (kg/m3)"] = df["Quantity (kg/m3)"] * df["CO2_Factor(kg_CO2_per_kg)"]
 
+    # Normalize cost dataset
     if costs_df is not None and "Cost(₹/kg)" in costs_df.columns:
-        df = df.merge(costs_df, on="Material", how="left")
+        costs_df = costs_df.copy()
+        costs_df["Material_norm"] = costs_df["Material"].str.strip().str.lower()
+        df = df.merge(costs_df[["Material_norm","Cost(₹/kg)"]], on="Material_norm", how="left")
         df["Cost(₹/kg)"] = df["Cost(₹/kg)"].fillna(0.0)
         df["Cost (₹/m3)"] = df["Quantity (kg/m3)"] * df["Cost(₹/kg)"]
     else:
         df["Cost (₹/m3)"] = 0.0
+
+    # For display, add back original names (capitalized)
+    df["Material"] = df["Material_norm"].str.title()
+    df = df[["Material","Quantity (kg/m3)","CO2_Factor(kg_CO2_per_kg)","CO2_Emissions (kg/m3)","Cost(₹/kg)","Cost (₹/m3)"]]
+
     return df
+
 
 # =========================
 # Moisture Correction
@@ -695,4 +713,5 @@ else:
     st.info("Set parameters and click **Generate Sustainable Mix (v2.0)**.")
 
 st.caption("CivilGPT v2.0 | Tabbed UI · Professional layout | Groq Mixtral")
+
 
