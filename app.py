@@ -576,24 +576,39 @@ if st.button("Generate Sustainable Mix (v2.0)"):
             # -------------------------
             tabs = st.tabs(["Overview","Optimized Mix","Baseline Mix","Trace & Calculations","Sieve & QA","Downloads"])
 
-            # ---- Overview
+                       # ---- Overview
             with tabs[0]:
                 co2_opt, cost_opt = opt_meta["co2_total"], opt_meta["cost_total"]
                 co2_base, cost_base = base_meta["co2_total"], base_meta["cost_total"]
                 reduction = (co2_base - co2_opt) / co2_base * 100 if co2_base > 0 else 0.0
                 cost_diff = cost_opt - cost_base
 
-                c1,c2,c3,c4 = st.columns(4)
-                c1.metric("🌱 Optimized CO₂", f"{co2_opt:.1f} kg/m³")
-                c2.metric("🏗 Baseline CO₂", f"{co2_base:.1f} kg/m³")
-                c3.metric("📉 Reduction", f"{reduction:.1f}%")
-                c4.metric("💰 Cost Δ", f"{cost_diff:+.2f} ₹/m³")
+                # Dashboard-style cards
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.markdown("##### 🌱 Optimized CO₂")
+                    st.markdown(f"<div style='font-size:28px; font-weight:bold'>{co2_opt:.1f} kg/m³</div>", unsafe_allow_html=True)
+                with col2:
+                    st.markdown("##### 🏗 Baseline CO₂")
+                    st.markdown(f"<div style='font-size:28px; font-weight:bold'>{co2_base:.1f} kg/m³</div>", unsafe_allow_html=True)
+                with col3:
+                    st.markdown("##### 📉 Reduction")
+                    color = "green" if reduction >= 0 else "red"
+                    st.markdown(f"<div style='font-size:28px; font-weight:bold; color:{color}'>{reduction:.1f}%</div>", unsafe_allow_html=True)
+                with col4:
+                    st.markdown("##### 💰 Cost Δ")
+                    color = "green" if cost_diff <= 0 else "red"
+                    st.markdown(f"<div style='font-size:28px; font-weight:bold; color:{color}'>{cost_diff:+.2f} ₹/m³</div>", unsafe_allow_html=True)
 
+                st.markdown("---")
                 st.markdown("#### 📊 CO₂ Comparison")
                 fig, ax = plt.subplots()
-                ax.bar(["Optimized", "Baseline"], [co2_opt, co2_base])
+                bars = ax.bar(["Optimized", "Baseline"], [co2_opt, co2_base])
+                bars[0].set_color("green")
+                bars[1].set_color("gray")
                 ax.set_ylabel("CO₂ (kg/m³)")
                 st.pyplot(fig)
+
 
             # ---- Optimized Mix
             with tabs[1]:
@@ -680,3 +695,4 @@ else:
     st.info("Set parameters and click **Generate Sustainable Mix (v2.0)**.")
 
 st.caption("CivilGPT v2.0 | Tabbed UI · Professional layout | Groq Mixtral")
+
