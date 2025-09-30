@@ -1,6 +1,7 @@
 # app.py — CivilGPT v2.1 (Refactored UI)
 # Backend logic preserved from v2.0
 # UI refactored for a professional, modern, and intuitive experience
+# Clarification step for free-text parsing added.
 
 import streamlit as st
 import pandas as pd
@@ -388,19 +389,19 @@ if manual_mode:
 
     st.sidebar.subheader("Advanced Parameters")
     with st.sidebar.expander("Fine-tuning & QA/QC"):
-        fine_fraction = st.sidebar.slider("Fine Aggregate Fraction", 0.30, 0.50, 0.40, 0.01, help="The proportion of fine aggregate to total aggregate volume. Adjust for workability and cohesion.")
-        qc_level = st.sidebar.selectbox("Quality Control Level", list(QC_STDDEV.keys()), index=0, help="Assumed site quality control, affecting the target strength calculation (f_target = fck + 1.65 * S).")
+        fine_fraction = st.slider("Fine Aggregate Fraction", 0.30, 0.50, 0.40, 0.01, help="The proportion of fine aggregate to total aggregate volume. Adjust for workability and cohesion.")
+        qc_level = st.selectbox("Quality Control Level", list(QC_STDDEV.keys()), index=0, help="Assumed site quality control, affecting the target strength calculation (f_target = fck + 1.65 * S).")
 
     st.sidebar.subheader("File Uploads (Optional)")
     with st.sidebar.expander("Upload Material Data & Gradation"):
         st.markdown("###### Sieve Analysis (IS 383)")
-        fine_zone = st.sidebar.selectbox("Fine Aggregate Zone", ["Zone I","Zone II","Zone III","Zone IV"], index=1, help="Grading zone as per IS 383.")
-        fine_csv = st.sidebar.file_uploader("Fine Aggregate CSV", type=["csv"], key="fine_csv", help="CSV with 'Sieve_mm' and 'PercentPassing' columns.")
-        coarse_csv = st.sidebar.file_uploader("Coarse Aggregate CSV", type=["csv"], key="coarse_csv", help="CSV with 'Sieve_mm' and 'PercentPassing' columns.")
+        fine_zone = st.selectbox("Fine Aggregate Zone", ["Zone I","Zone II","Zone III","Zone IV"], index=1, help="Grading zone as per IS 383.")
+        fine_csv = st.file_uploader("Fine Aggregate CSV", type=["csv"], key="fine_csv", help="CSV with 'Sieve_mm' and 'PercentPassing' columns.")
+        coarse_csv = st.file_uploader("Coarse Aggregate CSV", type=["csv"], key="coarse_csv", help="CSV with 'Sieve_mm' and 'PercentPassing' columns.")
         
         st.markdown("###### Cost & Emissions Data")
-        emissions_file = st.sidebar.file_uploader("Emission Factors (kgCO₂/kg)", type=["csv"], key="emissions_csv")
-        cost_file = st.sidebar.file_uploader("Cost Factors (₹/kg)", type=["csv"], key="cost_csv")
+        emissions_file = st.file_uploader("Emission Factors (kgCO₂/kg)", type=["csv"], key="emissions_csv")
+        cost_file = st.file_uploader("Cost Factors (₹/kg)", type=["csv"], key="cost_csv")
 
     st.sidebar.markdown("---")
     use_llm_parser = st.sidebar.checkbox("Use Groq LLM Parser", value=False, help="Use a Large Language Model for parsing the text prompt. Requires API key.")
@@ -419,18 +420,93 @@ _, emissions_df, costs_df = load_data(None, emissions_file, cost_file)
 
 
 # --- Main Execution Block ---
+
+# Initialize session state for clarification workflow
+if 'clarification_needed' not in st.session_state:
+    st.session_state.clarification_needed = False
+if 'run_generation' not in st.session_state:
+    st.session_state.run_generation = False
+if 'final_inputs' not in st.session_state:
+    st.session_state.final_inputs = {}
+
+# Map internal keys to UI widgets for the clarification form
+CLARIFICATION_WIDGETS = {
+    "grade": lambda v: st.selectbox("Concrete Grade", list(GRADE_STRENGTH.keys()), index=list(GRADE_STRENGTH.keys()).index(v) if v in GRADE_STRENGTH else 4),
+    "exposure": lambda v: st.selectbox("Exposure Condition", list(EXPOSURE_WB_LIMITS.keys()), index=list(EXPOSURE_WB_LIMITS.keys()).index(v) if v in EXPOSURE_WB_LIMITS else 2),
+    "target_slump": lambda v: st.slider("Target Slump (mm)", 25, 180, v if isinstance(v, int) else 100, 5),
+    "cement_choice": lambda v: st.selectbox("Cement Type", ["OPC 33", "OPC 43", "OPC 53", "PPC"], index=["OPC 33", "OPC 43", "OPC 53", "PPC"].index(v) if v in ["OPC 33", "OPC 43", "OPC 53", "PPC"] else 2),
+    "nom_max": lambda v: st.selectbox("Nominal Max. Aggregate Size (mm)", [10, 12.5, 20, 40], index=[10, 12.5, 20, 40].index(v) if v in [10, 12.5, 20, 40] else 2),
+}
+
+# The button press is the main trigger to start or reset the process
 if run_button:
+    # Reset state flags on a new run
+    st.session_state.run_generation = False
+    st.session_state.clarification_needed = False
+    
+    # Get initial inputs from sidebar (if manual) or defaults
+    inputs = { "grade": grade, "exposure": exposure, "cement_choice": cement_choice, "nom_max": nom_max, "agg_shape": agg_shape, "target_slump": target_slump, "use_sp": use_sp, "optimize_cost": optimize_cost, "fine_fraction": fine_fraction, "qc_level": qc_level, "fine_zone": fine_zone }
+    
+    # If the user entered text (and not in manual mode), parse it and check for missing info
+    if user_text.strip() and not manual_mode:
+        with st.spinner("🤖 Parsing your request..."):
+            inputs, msgs, _ = apply_parser(user_text, inputs)
+        
+        if msgs:
+            st.info(" ".join(msgs), icon="💡")
+            
+        # Check for the required fields for mix design
+        required_fields = ["grade", "exposure", "target_slump", "nom_max", "cement_choice"]
+        missing_fields = [f for f in required_fields if inputs.get(f) is None]
+
+        if missing_fields:
+            # If fields are missing, trigger the clarification step
+            st.session_state.clarification_needed = True
+            st.session_state.final_inputs = inputs  # Store partial inputs
+            st.session_state.missing_fields = missing_fields
+        else:
+            # If all fields are present, proceed to generation
+            st.session_state.run_generation = True
+            st.session_state.final_inputs = inputs
+    else:
+        # If in manual mode or no text was entered, proceed directly to generation
+        st.session_state.run_generation = True
+        st.session_state.final_inputs = inputs
+
+# Display the clarification form if triggered
+if st.session_state.get('clarification_needed', False):
+    st.markdown("---")
+    st.warning("Your request is missing some details. Please confirm the following to continue.", icon="🤔")
+    with st.form("clarification_form"):
+        st.subheader("Please Clarify Your Requirements")
+        current_inputs = st.session_state.final_inputs
+        missing_fields_list = st.session_state.missing_fields
+        
+        # Dynamically create widgets only for the missing fields
+        num_cols = min(len(missing_fields_list), 3) # Max 3 columns for neatness
+        cols = st.columns(num_cols)
+        for i, field in enumerate(missing_fields_list):
+            with cols[i % num_cols]:
+                widget_func = CLARIFICATION_WIDGETS[field]
+                current_value = current_inputs.get(field)
+                new_value = widget_func(current_value)
+                current_inputs[field] = new_value
+
+        submitted = st.form_submit_button("✅ Confirm & Continue", use_container_width=True, type="primary")
+
+        if submitted:
+            # When form is submitted, update state and rerun to start generation
+            st.session_state.final_inputs = current_inputs
+            st.session_state.clarification_needed = False
+            st.session_state.run_generation = True
+            st.rerun()
+
+# Run the main generation and display logic if the flag is set
+if st.session_state.get('run_generation', False):
     st.markdown("---")
     try:
-        inputs = { "grade": grade, "exposure": exposure, "cement_choice": cement_choice, "nom_max": nom_max, "agg_shape": agg_shape, "target_slump": target_slump, "use_sp": use_sp, "optimize_cost": optimize_cost, "fine_fraction": fine_fraction }
+        inputs = st.session_state.final_inputs
         
-        # Apply parser if text is provided
-        if user_text.strip():
-            with st.spinner("🤖 Parsing your request..."):
-                inputs, msgs, _ = apply_parser(user_text, inputs)
-            if msgs:
-                st.info(" ".join(msgs), icon="💡")
-
         # Validate grade against exposure
         min_grade_req = EXPOSURE_MIN_GRADE[inputs["exposure"]]
         grade_order = list(GRADE_STRENGTH.keys())
@@ -440,7 +516,7 @@ if run_button:
 
         # Generate mixes
         with st.spinner("⚙️ Running IS-code calculations and optimizing for sustainability..."):
-            fck, S = GRADE_STRENGTH[inputs["grade"]], QC_STDDEV[qc_level]
+            fck, S = GRADE_STRENGTH[inputs["grade"]], QC_STDDEV[inputs.get("qc_level", "Good")]
             fck_target = fck + 1.65 * S
             opt_df, opt_meta, trace = generate_mix(inputs["grade"], inputs["exposure"], inputs["nom_max"], inputs["target_slump"], inputs["agg_shape"], emissions_df, costs_df, inputs["cement_choice"], use_sp=inputs["use_sp"], optimize_cost=inputs["optimize_cost"], fine_fraction=inputs["fine_fraction"])
             base_df, base_meta = generate_baseline(inputs["grade"], inputs["exposure"], inputs["nom_max"], inputs["target_slump"], inputs["agg_shape"], emissions_df, costs_df, inputs["cement_choice"], use_sp=inputs["use_sp"], fine_fraction=inputs["fine_fraction"])
@@ -534,7 +610,7 @@ if run_button:
                     st.subheader("Fine Aggregate Gradation")
                     if fine_csv is not None:
                         df_fine = pd.read_csv(fine_csv)
-                        ok_fa, msgs_fa = sieve_check_fa(df_fine, fine_zone)
+                        ok_fa, msgs_fa = sieve_check_fa(df_fine, inputs.get("fine_zone", "Zone II"))
                         if ok_fa: st.success(msgs_fa[0], icon="✅")
                         else: 
                             for m in msgs_fa: st.error(m, icon="❌")
@@ -618,8 +694,12 @@ if run_button:
     except Exception as e:
         st.error(f"An unexpected error occurred: {e}", icon="💥")
         st.code(traceback.format_exc())
+    finally:
+        # VERY IMPORTANT: Reset the generation flag after the run is complete
+        st.session_state.run_generation = False
 
-else:
+# This block runs only if no action (button press, form submission) has been initiated
+elif not st.session_state.get('clarification_needed'):
     st.info("Enter your concrete requirements in the prompt box above, or switch to manual mode to specify parameters.", icon="👆")
     st.markdown("---")
     st.subheader("How It Works")
