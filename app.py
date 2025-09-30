@@ -66,6 +66,7 @@ AGG_SHAPE_WATER_ADJ = {"Angular (baseline)": 0.00, "Sub-angular": -0.03,"Sub-rou
 QC_STDDEV = {"Good": 5.0, "Fair": 7.5, "Poor": 10.0} # IS 10262, Table 2
 
 # NEW: IS 10262:2019, Table 5 - Volume of Coarse Aggregate per unit volume of Total Aggregate
+# FIXED: Added 12.5 as a key to prevent KeyError
 COARSE_AGG_FRAC_BY_ZONE = {
     10: {"Zone I": 0.50, "Zone II": 0.48, "Zone III": 0.46, "Zone IV": 0.44},
     12.5: {"Zone I": 0.59, "Zone II": 0.57, "Zone III": 0.55, "Zone IV": 0.53},
