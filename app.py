@@ -3,6 +3,7 @@
 # UI refactored for a professional, modern, and intuitive experience
 # Clarification step for free-text parsing added.
 # v2.2 - Corrected aggregate proportioning logic to align with IS 10262:2019, Table 5.
+# v2.3 - Added developer calibration panel to tune optimizer search parameters.
 
 import streamlit as st
 import pandas as pd
@@ -189,7 +190,7 @@ def evaluate_mix(components_dict, emissions_df, costs_df=None):
     emissions_df = emissions_df.copy()
     emissions_df["Material_norm"] = emissions_df["Material"].str.strip().str.lower()
     df = comp_df.merge(emissions_df[["Material_norm","CO2_Factor(kg_CO2_per_kg)"]],
-                       on="Material_norm", how="left")
+                         on="Material_norm", how="left")
     if "CO2_Factor(kg_CO2_per_kg)" not in df.columns:
         df["CO2_Factor(kg_CO2_per_kg)"] = 0.0
     df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
@@ -300,12 +301,18 @@ def sieve_check_ca(df: pd.DataFrame, nominal_mm: int):
         return ok, msgs
     except: return False, ["Invalid coarse aggregate CSV format. Ensure 'Sieve_mm' and 'PercentPassing' columns exist."]
 
-def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, emissions, costs, cement_choice, use_sp=True, sp_reduction=0.18, optimize_cost=False):
+# Calibration overrides added: wb_min, wb_steps, max_flyash_frac, max_ggbs_frac, scm_step, fine_fraction_override
+def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, emissions, costs, cement_choice, use_sp=True, sp_reduction=0.18, optimize_cost=False, wb_min=0.35, wb_steps=6, max_flyash_frac=0.3, max_ggbs_frac=0.5, scm_step=0.1, fine_fraction_override=None):
     w_b_limit, min_cem = float(EXPOSURE_WB_LIMITS[exposure]), float(EXPOSURE_MIN_CEMENT[exposure])
     target_water = water_for_slump_and_shape(nom_max_mm=nom_max, slump_mm=int(target_slump), agg_shape=agg_shape, uses_sp=use_sp, sp_reduction_frac=sp_reduction)
     best_df, best_meta, best_score = None, None, float("inf")
     trace = []
-    wb_values, flyash_options, ggbs_options = np.linspace(0.35, w_b_limit, 6), [0.0, 0.2, 0.3], [0.0, 0.3, 0.5]
+    
+    # Use calibrated optimizer values
+    wb_values = np.linspace(float(wb_min), float(w_b_limit), int(wb_steps))
+    flyash_options = np.arange(0.0, max_flyash_frac + 1e-9, scm_step)
+    ggbs_options = np.arange(0.0, max_ggbs_frac + 1e-9, scm_step)
+
     for wb in wb_values:
         for flyash_frac in flyash_options:
             for ggbs_frac in ggbs_options:
@@ -314,8 +321,13 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, e
                 cement, flyash, ggbs = binder * (1 - flyash_frac - ggbs_frac), binder * flyash_frac, binder * ggbs_frac
                 sp = 0.01 * binder if use_sp else 0.0 # Typical SP dosage is ~1% of binder
                 
-                # UPDATED LOGIC: Get aggregate proportions from IS Code method
-                coarse_agg_frac = get_coarse_agg_fraction(nom_max, fine_zone, wb)
+                # Check for developer override of aggregate proportioning
+                if fine_fraction_override is not None:
+                    coarse_agg_frac = 1.0 - fine_fraction_override
+                else:
+                    # IS-Code Compliant Logic
+                    coarse_agg_frac = get_coarse_agg_fraction(nom_max, fine_zone, wb)
+                
                 fine, coarse = compute_aggregates(binder, target_water, sp, coarse_agg_frac)
 
                 mix = {cement_choice: cement,"Fly Ash": flyash,"GGBS": ggbs,"Water": target_water,"PCE Superplasticizer": sp,"Fine Aggregate": fine,"Coarse Aggregate": coarse}
@@ -460,6 +472,17 @@ else: # Default values when manual mode is off
     emissions_file, cost_file = None, None
     use_llm_parser = False
 
+# NEW: Calibration controls, always visible
+with st.sidebar.expander("Calibration & Tuning (Developer)"):
+    enable_calibration_overrides = st.checkbox("Enable calibration overrides", False, help="Override default optimizer search parameters with the values below.")
+    calib_wb_min = st.number_input("W/B search minimum (wb_min)", 0.30, 0.45, 0.35, 0.01, help="Lower bound for the Water/Binder ratio search space.")
+    calib_wb_steps = st.slider("W/B search steps (wb_steps)", 3, 15, 6, 1, help="Number of W/B ratios to test between min and the exposure limit.")
+    calib_fine_fraction = st.slider("Fine Aggregate Fraction (fine_fraction)", 0.30, 0.50, 0.40, 0.01, help="Manually overrides the IS 10262 calculation for aggregate proportions.")
+    calib_max_flyash_frac = st.slider("Max Fly Ash fraction", 0.0, 0.5, 0.30, 0.05, help="Maximum Fly Ash replacement percentage to test.")
+    calib_max_ggbs_frac = st.slider("Max GGBS fraction", 0.0, 0.5, 0.50, 0.05, help="Maximum GGBS replacement percentage to test.")
+    calib_scm_step = st.slider("SCM fraction step (scm_step)", 0.05, 0.25, 0.10, 0.05, help="Step size for testing different SCM replacement percentages.")
+
+
 # Load datasets
 _, emissions_df, costs_df = load_data(None, emissions_file, cost_file)
 
@@ -559,11 +582,30 @@ if st.session_state.get('run_generation', False):
             st.warning(f"For **{inputs['exposure']}** exposure, IS 456 recommends a minimum grade of **{min_grade_req}**. The grade has been automatically updated.", icon="⚠️")
             inputs["grade"] = min_grade_req
 
+        # Prepare calibration overrides if enabled
+        calibration_kwargs = {}
+        if enable_calibration_overrides:
+            calibration_kwargs = {
+                "wb_min": calib_wb_min,
+                "wb_steps": calib_wb_steps,
+                "max_flyash_frac": calib_max_flyash_frac,
+                "max_ggbs_frac": calib_max_ggbs_frac,
+                "scm_step": calib_scm_step,
+                "fine_fraction_override": calib_fine_fraction
+            }
+            st.info("Developer calibration overrides are enabled.", icon="🛠️")
+
         # Generate mixes
         with st.spinner("⚙️ Running IS-code calculations and optimizing for sustainability..."):
             fck, S = GRADE_STRENGTH[inputs["grade"]], QC_STDDEV[inputs.get("qc_level", "Good")]
             fck_target = fck + 1.65 * S
-            opt_df, opt_meta, trace = generate_mix(inputs["grade"], inputs["exposure"], inputs["nom_max"], inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"], emissions_df, costs_df, inputs["cement_choice"], use_sp=inputs["use_sp"], optimize_cost=inputs["optimize_cost"])
+            opt_df, opt_meta, trace = generate_mix(
+                inputs["grade"], inputs["exposure"], inputs["nom_max"], 
+                inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"], 
+                emissions_df, costs_df, inputs["cement_choice"], 
+                use_sp=inputs["use_sp"], optimize_cost=inputs["optimize_cost"],
+                **calibration_kwargs
+            )
             base_df, base_meta = generate_baseline(inputs["grade"], inputs["exposure"], inputs["nom_max"], inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"], emissions_df, costs_df, inputs["cement_choice"], use_sp=inputs["use_sp"])
 
         if opt_df is None or base_df is None:
