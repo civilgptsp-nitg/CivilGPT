@@ -4,6 +4,7 @@
 # Clarification step for free-text parsing added.
 # v2.2 - Corrected aggregate proportioning logic to align with IS 10262:2019, Table 5.
 # v2.3 - Added developer calibration panel to tune optimizer search parameters.
+# v2.4 - Added Lab Calibration Dataset Upload + Error Analysis feature.
 
 import streamlit as st
 import pandas as pd
@@ -179,6 +180,55 @@ def get_coarse_agg_fraction(nom_max_mm: float, fa_zone: str, wb_ratio: float):
     # Ensure fraction is within reasonable bounds (e.g., 0.4 to 0.8)
     return max(0.4, min(0.8, corrected_fraction))
 
+# NEW: Function for lab calibration analysis
+def run_lab_calibration(lab_df):
+    """
+    Compares lab-tested strengths against CivilGPT's IS-code based target strength.
+    """
+    results = []
+    # Assume "Good" Quality Control for standard deviation as per the app's default
+    default_qc_level = "Good"
+    std_dev_S = QC_STDDEV[default_qc_level]
+
+    for _, row in lab_df.iterrows():
+        try:
+            # Extract inputs from the lab data row
+            grade = str(row['grade']).strip()
+            actual_strength = float(row['actual_strength'])
+
+            # Validate grade and get characteristic strength (fck)
+            if grade not in GRADE_STRENGTH:
+                continue # Skip rows with invalid grade
+            fck = GRADE_STRENGTH[grade]
+
+            # CivilGPT's prediction is the target strength required by IS code
+            predicted_strength = fck + 1.65 * std_dev_S
+
+            results.append({
+                "Grade": grade,
+                "Exposure": row.get('exposure', 'N/A'),
+                "Slump (mm)": row.get('slump', 'N/A'),
+                "Lab Strength (MPa)": actual_strength,
+                "Predicted Target Strength (MPa)": predicted_strength,
+                "Error (MPa)": predicted_strength - actual_strength
+            })
+        except (KeyError, ValueError, TypeError):
+            # Skip rows with malformed data (e.g., non-numeric strength)
+            pass
+
+    if not results:
+        return None, {}
+
+    results_df = pd.DataFrame(results)
+
+    # Calculate error metrics
+    mae = results_df["Error (MPa)"].abs().mean()
+    rmse = np.sqrt((results_df["Error (MPa)"] ** 2).mean())
+    bias = results_df["Error (MPa)"].mean()
+
+    metrics = {"Mean Absolute Error (MPa)": mae, "Root Mean Squared Error (MPa)": rmse, "Mean Bias (MPa)": bias}
+
+    return results_df, metrics
 
 # ==============================================================================
 # PART 2: CORE MIX LOGIC (UPDATED)
@@ -460,6 +510,20 @@ if manual_mode:
         emissions_file = st.file_uploader("Emission Factors (kgCO₂/kg)", type=["csv"], key="emissions_csv")
         cost_file = st.file_uploader("Cost Factors (₹/kg)", type=["csv"], key="cost_csv")
 
+    # NEW: Expander for Lab Calibration
+    with st.sidebar.expander("🔬 Lab Calibration Dataset"):
+        st.markdown("""
+        Upload a CSV with lab results to compare against CivilGPT's predictions.
+        **Required columns:**
+        - `grade` (e.g., M30)
+        - `exposure` (e.g., Severe)
+        - `slump` (mm)
+        - `nom_max` (mm)
+        - `cement_choice` (e.g., OPC 53)
+        - `actual_strength` (MPa)
+        """)
+        lab_csv = st.file_uploader("Upload Lab Data CSV", type=["csv"], key="lab_csv")
+
     st.sidebar.markdown("---")
     use_llm_parser = st.sidebar.checkbox("Use Groq LLM Parser", value=False, help="Use a Large Language Model for parsing the text prompt. Requires API key.")
 
@@ -468,7 +532,7 @@ else: # Default values when manual mode is off
     nom_max, agg_shape, target_slump = 20, "Angular (baseline)", 125
     use_sp, optimize_cost, fine_zone = True, False, "Zone II"
     qc_level = "Good"
-    fine_csv, coarse_csv = None, None
+    fine_csv, coarse_csv, lab_csv = None, None, None
     emissions_file, cost_file = None, None
     use_llm_parser = False
 
@@ -617,7 +681,7 @@ if st.session_state.get('run_generation', False):
             st.success(f"Successfully generated mix designs for **{inputs['grade']}** concrete in **{inputs['exposure']}** conditions.", icon="✅")
 
             # --- Results Display ---
-            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 **Overview**", "🌱 **Optimized Mix**", "🏗️ **Baseline Mix**", "📋 **QA/QC & Gradation**", "📥 **Downloads & Reports**"])
+            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 **Overview**", "🌱 **Optimized Mix**", "🏗️ **Baseline Mix**", "📋 **QA/QC & Gradation**", "📥 **Downloads & Reports**", "🔬 **Lab Calibration**"])
 
             # -- Overview Tab --
             with tab1:
@@ -777,6 +841,57 @@ if st.session_state.get('run_generation', False):
                 with d2:
                     st.download_button("✔️ Optimized Mix (CSV)", data=opt_df.to_csv(index=False).encode("utf-8"), file_name="optimized_mix.csv", mime="text/csv", use_container_width=True)
                     st.download_button("✖️ Baseline Mix (CSV)", data=base_df.to_csv(index=False).encode("utf-8"), file_name="baseline_mix.csv", mime="text/csv", use_container_width=True)
+            
+            # -- NEW: Lab Calibration Tab --
+            with tab6:
+                st.header("🔬 Lab Calibration Analysis")
+                if lab_csv is not None:
+                    try:
+                        lab_results_df = pd.read_csv(lab_csv)
+                        # Run the calibration analysis
+                        comparison_df, error_metrics = run_lab_calibration(lab_results_df)
+
+                        if comparison_df is not None and not comparison_df.empty:
+                            st.subheader("Error Metrics")
+                            st.markdown("Comparing lab-tested 28-day strength against the IS code's required target strength (`f_target = fck + 1.65 * S`).")
+                            m1, m2, m3 = st.columns(3)
+                            m1.metric(label="Mean Absolute Error (MAE)", value=f"{error_metrics['Mean Absolute Error (MPa)']:.2f} MPa")
+                            m2.metric(label="Root Mean Squared Error (RMSE)", value=f"{error_metrics['Root Mean Squared Error (MPa)']:.2f} MPa")
+                            m3.metric(label="Mean Bias (Over/Under-prediction)", value=f"{error_metrics['Mean Bias (MPa)']:.2f} MPa")
+                            st.markdown("---")
+
+                            st.subheader("Comparison: Lab vs. Predicted Target Strength")
+                            st.dataframe(comparison_df.style.format({
+                                "Lab Strength (MPa)": "{:.2f}",
+                                "Predicted Target Strength (MPa)": "{:.2f}",
+                                "Error (MPa)": "{:+.2f}"
+                            }), use_container_width=True)
+
+                            st.subheader("Prediction Accuracy Scatter Plot")
+                            fig, ax = plt.subplots()
+                            ax.scatter(comparison_df["Lab Strength (MPa)"], comparison_df["Predicted Target Strength (MPa)"], alpha=0.7, label="Data Points")
+                            # Add y=x line
+                            lims = [
+                                np.min([ax.get_xlim(), ax.get_ylim()]),
+                                np.max([ax.get_xlim(), ax.get_ylim()]),
+                            ]
+                            ax.plot(lims, lims, 'r--', alpha=0.75, zorder=0, label="Perfect Prediction (y=x)")
+                            ax.set_xlabel("Actual Lab Strength (MPa)")
+                            ax.set_ylabel("Predicted Target Strength (MPa)")
+                            ax.set_title("Lab Strength vs. Predicted Target Strength")
+                            ax.legend()
+                            ax.grid(True)
+                            st.pyplot(fig)
+                        else:
+                            st.warning("Could not process the uploaded lab data CSV. Please check the file format, column names, and ensure it contains valid data.", icon="⚠️")
+                    except Exception as e:
+                        st.error(f"Failed to read or process the lab data CSV file: {e}", icon="💥")
+                else:
+                    st.info(
+                        "Upload a lab data CSV in the sidebar to automatically compare CivilGPT's "
+                        "target strength calculations against your real-world results.",
+                        icon="ℹ️"
+                    )
 
     except Exception as e:
         st.error(f"An unexpected error occurred: {e}", icon="💥")
