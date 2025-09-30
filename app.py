@@ -1,7 +1,8 @@
-# app.py — CivilGPT v2.1 (Refactored UI)
+# app.py — CivilGPT v2.1 (Refactored UI & IS-Code Compliant Logic)
 # Backend logic preserved from v2.0
 # UI refactored for a professional, modern, and intuitive experience
 # Clarification step for free-text parsing added.
+# v2.2 - Corrected aggregate proportioning logic to align with IS 10262:2019, Table 5.
 
 import streamlit as st
 import pandas as pd
@@ -18,7 +19,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 
 # ==============================================================================
-# PART 1: BACKEND LOGIC (UNCHANGED)
+# PART 1: BACKEND LOGIC (CORRECTED & ENHANCED)
 # ==============================================================================
 
 # Groq client (optional)
@@ -54,14 +55,23 @@ def safe_load_excel(name):
 lab_df = safe_load_excel(LAB_FILE)
 mix_df = safe_load_excel(MIX_FILE)
 
-# IS-style Rules & Tables
+
+# --- IS Code Rules & Tables (IS 456 & IS 10262) ---
 EXPOSURE_WB_LIMITS = {"Mild": 0.60,"Moderate": 0.55,"Severe": 0.50,"Very Severe": 0.45,"Marine": 0.40}
 EXPOSURE_MIN_CEMENT = {"Mild": 300, "Moderate": 300, "Severe": 320,"Very Severe": 340, "Marine": 360}
 EXPOSURE_MIN_GRADE = {"Mild": "M20", "Moderate": "M25", "Severe": "M30","Very Severe": "M35", "Marine": "M40"}
 GRADE_STRENGTH = {"M10": 10, "M15": 15, "M20": 20, "M25": 25,"M30": 30, "M35": 35, "M40": 40, "M45": 45, "M50": 50}
-WATER_BASELINE = {10: 208, 12.5: 202, 20: 186, 40: 165}
+WATER_BASELINE = {10: 208, 12.5: 202, 20: 186, 40: 165} # IS 10262, Table 4 (for 50mm slump)
 AGG_SHAPE_WATER_ADJ = {"Angular (baseline)": 0.00, "Sub-angular": -0.03,"Sub-rounded": -0.05, "Rounded": -0.07,"Flaky/Elongated": +0.03}
-QC_STDDEV = {"Good": 5.0, "Fair": 7.5, "Poor": 10.0}
+QC_STDDEV = {"Good": 5.0, "Fair": 7.5, "Poor": 10.0} # IS 10262, Table 2
+
+# NEW: IS 10262:2019, Table 5 - Volume of Coarse Aggregate per unit volume of Total Aggregate
+COARSE_AGG_FRAC_BY_ZONE = {
+    10: {"Zone I": 0.50, "Zone II": 0.48, "Zone III": 0.46, "Zone IV": 0.44},
+    12.5: {"Zone I": 0.59, "Zone II": 0.57, "Zone III": 0.55, "Zone IV": 0.53},
+    20: {"Zone I": 0.66, "Zone II": 0.64, "Zone III": 0.62, "Zone IV": 0.60},
+    40: {"Zone I": 0.71, "Zone II": 0.69, "Zone III": 0.67, "Zone IV": 0.65}
+}
 
 FINE_AGG_ZONE_LIMITS = {
     "Zone I":   {"10.0": (100,100),"4.75": (90,100),"2.36": (60,95),"1.18": (30,70),"0.600": (15,34),"0.300": (5,20),"0.150": (0,10)},
@@ -139,14 +149,37 @@ def water_for_slump_and_shape(nom_max_mm: int, slump_mm: int,
                               agg_shape: str, uses_sp: bool=False,
                               sp_reduction_frac: float=0.0) -> float:
     base = WATER_BASELINE.get(int(nom_max_mm), 186.0)
+    # IS 10262: Increase water by ~3% for every 25mm slump increase over 50mm
     if slump_mm <= 50: water = base
     else: water = base * (1 + 0.03 * ((slump_mm - 50) / 25.0))
     water *= (1.0 + AGG_SHAPE_WATER_ADJ.get(agg_shape, 0.0))
     if uses_sp and sp_reduction_frac > 0: water *= (1 - sp_reduction_frac)
     return float(water)
 
+# NEW: Helper function to get coarse aggregate fraction as per IS 10262, Table 5
+def get_coarse_agg_fraction(nom_max_mm: float, fa_zone: str, wb_ratio: float):
+    """
+    Calculates the volume of coarse aggregate per unit volume of total aggregate.
+    Adjusts for w/b ratio as per IS 10262:2019 note in Table 5.
+    The baseline w/b ratio for Table 5 is 0.5.
+    """
+    # Get the baseline coarse aggregate volume fraction from the table
+    base_fraction = COARSE_AGG_FRAC_BY_ZONE.get(nom_max_mm, {}).get(fa_zone, 0.62) # Default to a reasonable value if not found
+
+    # Adjust for w/b ratio.
+    # The code suggests increasing the fraction by 0.01 for every decrease of 0.05 in w/b ratio.
+    # And vice-versa for an increase in w/b ratio.
+    wb_diff = 0.50 - wb_ratio
+    correction = (wb_diff / 0.05) * 0.01
+    
+    corrected_fraction = base_fraction + correction
+    
+    # Ensure fraction is within reasonable bounds (e.g., 0.4 to 0.8)
+    return max(0.4, min(0.8, corrected_fraction))
+
+
 # ==============================================================================
-# PART 2: CORE MIX LOGIC (UNCHANGED)
+# PART 2: CORE MIX LOGIC (UPDATED)
 # ==============================================================================
 
 def evaluate_mix(components_dict, emissions_df, costs_df=None):
@@ -176,7 +209,7 @@ def aggregate_correction(delta_moisture_pct: float, agg_mass_ssd: float):
     corrected_mass = agg_mass_ssd * (1 + delta_moisture_pct / 100.0)
     return float(water_delta), float(corrected_mass)
 
-def compute_aggregates(cementitious, water, sp, fine_fraction=0.40,
+def compute_aggregates(cementitious, water, sp, coarse_agg_fraction,
                        density_fa=2650.0, density_ca=2700.0):
     vol_cem = cementitious / 3150.0
     vol_wat = water / 1000.0
@@ -184,7 +217,10 @@ def compute_aggregates(cementitious, water, sp, fine_fraction=0.40,
     vol_binder = vol_cem + vol_wat + vol_sp
     vol_agg = 1.0 - vol_binder
     if vol_agg <= 0: vol_agg = 0.60
-    vol_fine, vol_coarse = vol_agg * fine_fraction, vol_agg * (1.0 - fine_fraction)
+    
+    vol_coarse = vol_agg * coarse_agg_fraction
+    vol_fine = vol_agg * (1.0 - coarse_agg_fraction)
+
     mass_fine, mass_coarse = vol_fine * density_fa, vol_coarse * density_ca
     return float(mass_fine), float(mass_coarse)
 
@@ -263,7 +299,7 @@ def sieve_check_ca(df: pd.DataFrame, nominal_mm: int):
         return ok, msgs
     except: return False, ["Invalid coarse aggregate CSV format. Ensure 'Sieve_mm' and 'PercentPassing' columns exist."]
 
-def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, emissions, costs, cement_choice, use_sp=True, sp_reduction=0.18, optimize_cost=False, fine_fraction=0.40):
+def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, emissions, costs, cement_choice, use_sp=True, sp_reduction=0.18, optimize_cost=False):
     w_b_limit, min_cem = float(EXPOSURE_WB_LIMITS[exposure]), float(EXPOSURE_MIN_CEMENT[exposure])
     target_water = water_for_slump_and_shape(nom_max_mm=nom_max, slump_mm=int(target_slump), agg_shape=agg_shape, uses_sp=use_sp, sp_reduction_frac=sp_reduction)
     best_df, best_meta, best_score = None, None, float("inf")
@@ -276,7 +312,11 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, emissions, c
                 binder = max(target_water / wb, min_cem)
                 cement, flyash, ggbs = binder * (1 - flyash_frac - ggbs_frac), binder * flyash_frac, binder * ggbs_frac
                 sp = 0.01 * binder if use_sp else 0.0 # Typical SP dosage is ~1% of binder
-                fine, coarse = compute_aggregates(binder, target_water, sp, fine_fraction)
+                
+                # UPDATED LOGIC: Get aggregate proportions from IS Code method
+                coarse_agg_frac = get_coarse_agg_fraction(nom_max, fine_zone, wb)
+                fine, coarse = compute_aggregates(binder, target_water, sp, coarse_agg_frac)
+
                 mix = {cement_choice: cement,"Fly Ash": flyash,"GGBS": ggbs,"Water": target_water,"PCE Superplasticizer": sp,"Fine Aggregate": fine,"Coarse Aggregate": coarse}
                 df = evaluate_mix(mix, emissions, costs)
                 co2_total, cost_total = float(df["CO2_Emissions (kg/m3)"].sum()), float(df["Cost (₹/m3)"].sum())
@@ -288,12 +328,16 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, emissions, c
                     best_df, best_score, best_meta = df.copy(), score, candidate_meta.copy()
     return best_df, best_meta, trace
 
-def generate_baseline(grade, exposure, nom_max, target_slump, agg_shape, emissions, costs, cement_choice, use_sp=True, sp_reduction=0.18, fine_fraction=0.40):
+def generate_baseline(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, emissions, costs, cement_choice, use_sp=True, sp_reduction=0.18):
     w_b_limit, min_cem = float(EXPOSURE_WB_LIMITS[exposure]), float(EXPOSURE_MIN_CEMENT[exposure])
     water_target = water_for_slump_and_shape(nom_max_mm=nom_max, slump_mm=int(target_slump), agg_shape=agg_shape, uses_sp=use_sp, sp_reduction_frac=sp_reduction)
     cementitious = max(water_target / w_b_limit, min_cem)
     sp = 0.01 * cementitious if use_sp else 0.0
-    fine, coarse = compute_aggregates(cementitious, water_target, sp, fine_fraction)
+
+    # UPDATED LOGIC: Get aggregate proportions from IS Code method
+    coarse_agg_frac = get_coarse_agg_fraction(nom_max, fine_zone, w_b_limit)
+    fine, coarse = compute_aggregates(cementitious, water_target, sp, coarse_agg_frac)
+    
     mix = {cement_choice: cementitious,"Fly Ash": 0.0,"GGBS": 0.0,"Water": water_target, "PCE Superplasticizer": sp,"Fine Aggregate": fine,"Coarse Aggregate": coarse}
     df = evaluate_mix(mix, emissions, costs)
     meta = {"w_b": w_b_limit, "cementitious": cementitious, "cement": cementitious, "flyash": 0.0, "ggbs": 0.0, "water_target": water_target, "sp": sp, "fine": fine, "coarse": coarse, "scm_total_frac": 0.0, "grade": grade, "exposure": exposure, "nom_max": nom_max, "slump": target_slump, "co2_total": float(df["CO2_Emissions (kg/m3)"].sum()), "cost_total": float(df["Cost (₹/m3)"].sum())}
@@ -381,21 +425,21 @@ if manual_mode:
     cement_choice = st.sidebar.selectbox("Cement Type", ["OPC 33", "OPC 43", "OPC 53", "PPC"], index=2, help="Type of Ordinary Portland Cement or Pozzolana Portland Cement.")
     nom_max = st.sidebar.selectbox("Nominal Max. Aggregate Size (mm)", [10, 12.5, 20, 40], index=2, help="Largest practical aggregate size, influences water demand.")
     agg_shape = st.sidebar.selectbox("Coarse Aggregate Shape", list(AGG_SHAPE_WATER_ADJ.keys()), index=0, help="Shape affects water demand; angular requires more water than rounded.")
-    
+    # UPDATED: Fine aggregate zone is now a direct input for the IS-code calculation
+    fine_zone = st.sidebar.selectbox("Fine Aggregate Zone (IS 383)", ["Zone I","Zone II","Zone III","Zone IV"], index=1, help="Grading zone as per IS 383. This is crucial for determining aggregate proportions per IS 10262.")
+
     st.sidebar.subheader("Optimization & Admixtures")
     use_sp = st.sidebar.checkbox("Use Superplasticizer (PCE)", True, help="Chemical admixture to increase workability or reduce water content.")
     optimize_for = st.sidebar.radio("Optimize For", ["Lowest CO₂", "Lowest Cost"], help="The optimizer will prioritize finding a feasible mix that minimizes either carbon emissions or material cost.")
     optimize_cost = (optimize_for == "Lowest Cost")
 
     st.sidebar.subheader("Advanced Parameters")
-    with st.sidebar.expander("Fine-tuning & QA/QC"):
-        fine_fraction = st.slider("Fine Aggregate Fraction", 0.30, 0.50, 0.40, 0.01, help="The proportion of fine aggregate to total aggregate volume. Adjust for workability and cohesion.")
+    with st.sidebar.expander("QA/QC"):
         qc_level = st.selectbox("Quality Control Level", list(QC_STDDEV.keys()), index=0, help="Assumed site quality control, affecting the target strength calculation (f_target = fck + 1.65 * S).")
 
     st.sidebar.subheader("File Uploads (Optional)")
     with st.sidebar.expander("Upload Material Data & Gradation"):
         st.markdown("###### Sieve Analysis (IS 383)")
-        fine_zone = st.selectbox("Fine Aggregate Zone", ["Zone I","Zone II","Zone III","Zone IV"], index=1, help="Grading zone as per IS 383.")
         fine_csv = st.file_uploader("Fine Aggregate CSV", type=["csv"], key="fine_csv", help="CSV with 'Sieve_mm' and 'PercentPassing' columns.")
         coarse_csv = st.file_uploader("Coarse Aggregate CSV", type=["csv"], key="coarse_csv", help="CSV with 'Sieve_mm' and 'PercentPassing' columns.")
         
@@ -409,9 +453,9 @@ if manual_mode:
 else: # Default values when manual mode is off
     grade, exposure, cement_choice = "M30", "Severe", "OPC 53"
     nom_max, agg_shape, target_slump = 20, "Angular (baseline)", 125
-    use_sp, optimize_cost, fine_fraction = True, False, 0.40
+    use_sp, optimize_cost, fine_zone = True, False, "Zone II"
     qc_level = "Good"
-    fine_zone, fine_csv, coarse_csv = "Zone II", None, None
+    fine_csv, coarse_csv = None, None
     emissions_file, cost_file = None, None
     use_llm_parser = False
 
@@ -445,7 +489,7 @@ if run_button:
     st.session_state.clarification_needed = False
     
     # Get initial inputs from sidebar (if manual) or defaults
-    inputs = { "grade": grade, "exposure": exposure, "cement_choice": cement_choice, "nom_max": nom_max, "agg_shape": agg_shape, "target_slump": target_slump, "use_sp": use_sp, "optimize_cost": optimize_cost, "fine_fraction": fine_fraction, "qc_level": qc_level, "fine_zone": fine_zone }
+    inputs = { "grade": grade, "exposure": exposure, "cement_choice": cement_choice, "nom_max": nom_max, "agg_shape": agg_shape, "target_slump": target_slump, "use_sp": use_sp, "optimize_cost": optimize_cost, "qc_level": qc_level, "fine_zone": fine_zone }
     
     # If the user entered text (and not in manual mode), parse it and check for missing info
     if user_text.strip() and not manual_mode:
@@ -518,8 +562,8 @@ if st.session_state.get('run_generation', False):
         with st.spinner("⚙️ Running IS-code calculations and optimizing for sustainability..."):
             fck, S = GRADE_STRENGTH[inputs["grade"]], QC_STDDEV[inputs.get("qc_level", "Good")]
             fck_target = fck + 1.65 * S
-            opt_df, opt_meta, trace = generate_mix(inputs["grade"], inputs["exposure"], inputs["nom_max"], inputs["target_slump"], inputs["agg_shape"], emissions_df, costs_df, inputs["cement_choice"], use_sp=inputs["use_sp"], optimize_cost=inputs["optimize_cost"], fine_fraction=inputs["fine_fraction"])
-            base_df, base_meta = generate_baseline(inputs["grade"], inputs["exposure"], inputs["nom_max"], inputs["target_slump"], inputs["agg_shape"], emissions_df, costs_df, inputs["cement_choice"], use_sp=inputs["use_sp"], fine_fraction=inputs["fine_fraction"])
+            opt_df, opt_meta, trace = generate_mix(inputs["grade"], inputs["exposure"], inputs["nom_max"], inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"], emissions_df, costs_df, inputs["cement_choice"], use_sp=inputs["use_sp"], optimize_cost=inputs["optimize_cost"])
+            base_df, base_meta = generate_baseline(inputs["grade"], inputs["exposure"], inputs["nom_max"], inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"], emissions_df, costs_df, inputs["cement_choice"], use_sp=inputs["use_sp"])
 
         if opt_df is None or base_df is None:
             st.error("Could not find a feasible mix design with the given constraints. Try adjusting the parameters, such as a higher grade or less restrictive exposure condition.", icon="❌")
