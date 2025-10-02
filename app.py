@@ -263,7 +263,7 @@ def aggregate_correction(delta_moisture_pct: float, agg_mass_ssd: float):
     return float(water_delta), float(corrected_mass)
 
 def compute_aggregates(cementitious, water, sp, coarse_agg_fraction,
-                       density_fa=2650.0, density_ca=2700.0):
+                           density_fa=2650.0, density_ca=2700.0):
     vol_cem = cementitious / 3150.0
     vol_wat = water / 1000.0
     vol_sp  = sp / 1200.0
@@ -376,7 +376,20 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, e
         for flyash_frac in flyash_options:
             for ggbs_frac in ggbs_options:
                 if flyash_frac + ggbs_frac > 0.50: continue
-                binder = max(target_water / wb, min_cem)
+
+                # --- START: Auto-correction logic for low cement content. ---
+                # This block explicitly checks if the binder content needed for the target w/b ratio meets
+                # IS 456 durability requirements. If not, it "auto-corrects" by increasing the binder to the
+                # minimum required value, then recalculates the actual w/b ratio for the mix. This corrected
+                # mix is then proposed and checked for overall feasibility.
+                binder_for_strength = target_water / wb
+                if binder_for_strength < min_cem:
+                    binder = min_cem  # Auto-correct: Enforce durability requirement
+                else:
+                    binder = binder_for_strength
+                actual_wb = target_water / binder # This is the true w/b ratio of the final mix
+                # --- END: Auto-correction logic. ---
+                
                 cement, flyash, ggbs = binder * (1 - flyash_frac - ggbs_frac), binder * flyash_frac, binder * ggbs_frac
                 sp = 0.01 * binder if use_sp else 0.0 # Typical SP dosage is ~1% of binder
                 
@@ -384,18 +397,20 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, e
                 if fine_fraction_override is not None:
                     coarse_agg_frac = 1.0 - fine_fraction_override
                 else:
-                    # IS-Code Compliant Logic
-                    coarse_agg_frac = get_coarse_agg_fraction(nom_max, fine_zone, wb)
+                    # IS-Code Compliant Logic, now using the actual w/b ratio for better accuracy
+                    coarse_agg_frac = get_coarse_agg_fraction(nom_max, fine_zone, actual_wb)
                 
                 fine, coarse = compute_aggregates(binder, target_water, sp, coarse_agg_frac)
 
                 mix = {cement_choice: cement,"Fly Ash": flyash,"GGBS": ggbs,"Water": target_water,"PCE Superplasticizer": sp,"Fine Aggregate": fine,"Coarse Aggregate": coarse}
                 df = evaluate_mix(mix, emissions, costs)
                 co2_total, cost_total = float(df["CO2_Emissions (kg/m3)"].sum()), float(df["Cost (₹/m3)"].sum())
-                candidate_meta = {"w_b": wb, "cementitious": binder, "cement": cement, "flyash": flyash, "ggbs": ggbs, "water_target": target_water, "sp": sp, "fine": fine, "coarse": coarse, "scm_total_frac": flyash_frac + ggbs_frac, "grade": grade, "exposure": exposure, "nom_max": nom_max, "slump": target_slump, "co2_total": co2_total, "cost_total": cost_total}
+                
+                # Use the actual_wb for reporting and compliance checks
+                candidate_meta = {"w_b": actual_wb, "cementitious": binder, "cement": cement, "flyash": flyash, "ggbs": ggbs, "water_target": target_water, "sp": sp, "fine": fine, "coarse": coarse, "scm_total_frac": flyash_frac + ggbs_frac, "grade": grade, "exposure": exposure, "nom_max": nom_max, "slump": target_slump, "co2_total": co2_total, "cost_total": cost_total}
                 feasible, reasons_fail, _, _, _ = check_feasibility(df, candidate_meta, exposure)
                 score = co2_total if not optimize_cost else cost_total
-                trace.append({"wb": float(wb), "flyash_frac": float(flyash_frac), "ggbs_frac": float(ggbs_frac),"co2": float(co2_total), "cost": float(cost_total),"score": float(score), "feasible": bool(feasible),"reasons": ", ".join(reasons_fail)})
+                trace.append({"wb": float(actual_wb), "flyash_frac": float(flyash_frac), "ggbs_frac": float(ggbs_frac),"co2": float(co2_total), "cost": float(cost_total),"score": float(score), "feasible": bool(feasible),"reasons": ", ".join(reasons_fail)})
                 if feasible and score < best_score:
                     best_df, best_score, best_meta = df.copy(), score, candidate_meta.copy()
     return best_df, best_meta, trace
