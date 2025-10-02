@@ -98,7 +98,8 @@ def simple_parse(text: str) -> dict:
         if re.search(exp, text, re.IGNORECASE): result["exposure"] = exp; break
     slump_match = re.search(r"(slump\s*(of\s*)?|)\b(\d{2,3})\s*mm", text, re.IGNORECASE)
     if slump_match: result["slump"] = int(slump_match.group(3))
-    cement_types = ["OPC 33", "OPC 43", "OPC 53", "PPC"]
+    # Restricted cement to OPC 43 only.
+    cement_types = ["OPC 43"]
     for ctype in cement_types:
         if re.search(ctype.replace(" ", r"\s*"), text, re.IGNORECASE):
             result["cement"] = ctype; break
@@ -310,7 +311,15 @@ def sanity_check_mix(meta, df):
         cement, water, fine, coarse, sp = float(meta.get("cement", 0)), float(meta.get("water_target", 0)), float(meta.get("fine", 0)), float(meta.get("coarse", 0)), float(meta.get("sp", 0))
         unit_wt = float(df["Quantity (kg/m3)"].sum())
     except Exception: return ["Insufficient data to run sanity checks."]
-    if cement < 250: warnings.append(f"Low cement content ({cement:.1f} kg/m³). May affect durability.")
+    
+    # MODIFIED: Low-cement warning logic changed.
+    # The previous check (cement < 250) was removed based on the requirement to not show the warning
+    # if any valid IS-code compliant mix exists. Since this function is only called for a successful,
+    # compliant mix, the condition to suppress the warning is always met. This change prevents
+    # penalizing sustainable mixes (with high SCM content) that have lower OPC cement but meet all
+    # IS-code requirements for total binder content.
+    # if cement < 250: warnings.append(f"Low cement content ({cement:.1f} kg/m³). May affect durability.")
+    
     if cement > 500: warnings.append(f"High cement content ({cement:.1f} kg/m³). Increases cost, shrinkage, and CO₂.")
     if water < 140 or water > 220: warnings.append(f"Water content ({water:.1f} kg/m³) is outside the typical range of 140-220 kg/m³.")
     if fine < 500 or fine > 900: warnings.append(f"Fine aggregate quantity ({fine:.1f} kg/m³) is unusual.")
@@ -464,7 +473,7 @@ with col1:
     user_text = st.text_area(
         "**Describe Your Requirements**",
         height=100,
-        placeholder="e.g., Design an M30 grade concrete for severe exposure using OPC 53. Target a slump of 125 mm with 20 mm aggregates.",
+        placeholder="e.g., Design an M30 grade concrete for severe exposure using OPC 43. Target a slump of 125 mm with 20 mm aggregates.",
         label_visibility="collapsed"
     )
 with col2:
@@ -485,7 +494,8 @@ if manual_mode:
     
     st.sidebar.subheader("Workability & Materials")
     target_slump = st.sidebar.slider("Target Slump (mm)", 25, 180, 100, 5, help="Specifies the desired consistency and workability of the fresh concrete.")
-    cement_choice = st.sidebar.selectbox("Cement Type", ["OPC 33", "OPC 43", "OPC 53", "PPC"], index=2, help="Type of Ordinary Portland Cement or Pozzolana Portland Cement.")
+    # Restricted cement to OPC 43 only.
+    cement_choice = st.sidebar.selectbox("Cement Type", ["OPC 43"], index=0, help="Type of Ordinary Portland Cement.")
     nom_max = st.sidebar.selectbox("Nominal Max. Aggregate Size (mm)", [10, 12.5, 20, 40], index=2, help="Largest practical aggregate size, influences water demand.")
     agg_shape = st.sidebar.selectbox("Coarse Aggregate Shape", list(AGG_SHAPE_WATER_ADJ.keys()), index=0, help="Shape affects water demand; angular requires more water than rounded.")
     # UPDATED: Fine aggregate zone is now a direct input for the IS-code calculation
@@ -519,7 +529,7 @@ if manual_mode:
         - `exposure` (e.g., Severe)
         - `slump` (mm)
         - `nom_max` (mm)
-        - `cement_choice` (e.g., OPC 53)
+        - `cement_choice` (e.g., OPC 43)
         - `actual_strength` (MPa)
         """)
         lab_csv = st.file_uploader("Upload Lab Data CSV", type=["csv"], key="lab_csv")
@@ -528,7 +538,8 @@ if manual_mode:
     use_llm_parser = st.sidebar.checkbox("Use Groq LLM Parser", value=False, help="Use a Large Language Model for parsing the text prompt. Requires API key.")
 
 else: # Default values when manual mode is off
-    grade, exposure, cement_choice = "M30", "Severe", "OPC 53"
+    # Restricted cement to OPC 43 only.
+    grade, exposure, cement_choice = "M30", "Severe", "OPC 43"
     nom_max, agg_shape, target_slump = 20, "Angular (baseline)", 125
     use_sp, optimize_cost, fine_zone = True, False, "Zone II"
     qc_level = "Good"
@@ -566,7 +577,8 @@ CLARIFICATION_WIDGETS = {
     "grade": lambda v: st.selectbox("Concrete Grade", list(GRADE_STRENGTH.keys()), index=list(GRADE_STRENGTH.keys()).index(v) if v in GRADE_STRENGTH else 4),
     "exposure": lambda v: st.selectbox("Exposure Condition", list(EXPOSURE_WB_LIMITS.keys()), index=list(EXPOSURE_WB_LIMITS.keys()).index(v) if v in EXPOSURE_WB_LIMITS else 2),
     "target_slump": lambda v: st.slider("Target Slump (mm)", 25, 180, v if isinstance(v, int) else 100, 5),
-    "cement_choice": lambda v: st.selectbox("Cement Type", ["OPC 33", "OPC 43", "OPC 53", "PPC"], index=["OPC 33", "OPC 43", "OPC 53", "PPC"].index(v) if v in ["OPC 33", "OPC 43", "OPC 53", "PPC"] else 2),
+    # Restricted cement to OPC 43 only.
+    "cement_choice": lambda v: st.selectbox("Cement Type", ["OPC 43"], index=0),
     "nom_max": lambda v: st.selectbox("Nominal Max. Aggregate Size (mm)", [10, 12.5, 20, 40], index=[10, 12.5, 20, 40].index(v) if v in [10, 12.5, 20, 40] else 2),
 }
 
