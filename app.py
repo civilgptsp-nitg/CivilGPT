@@ -724,6 +724,11 @@ if st.session_state.get('run_generation', False):
                 c4.metric("⚖️ Unit Weight (kg/m³)", f"{df['Quantity (kg/m3)'].sum():.1f}")
                 
                 st.subheader("Mix Proportions (per m³)")
+                # UI PATCH: Add explanatory note for CO2 factors.
+                st.info(
+                    "CO₂ factors represent cradle-to-gate emissions: the amount of CO₂ released per kg of material during its manufacture. These values do not reduce the material mass in the mix — they are an environmental footprint, not a physical subtraction.",
+                    icon="ℹ️"
+                )
                 st.dataframe(df.style.format({
                     "Quantity (kg/m3)": "{:.2f}",
                     "CO2_Factor(kg_CO2_per_kg)": "{:.3f}",
