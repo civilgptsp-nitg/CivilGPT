@@ -149,8 +149,8 @@ def load_data(materials_file=None, emissions_file=None, cost_file=None):
     return materials, emissions, costs
 
 def water_for_slump_and_shape(nom_max_mm: int, slump_mm: int,
-                              agg_shape: str, uses_sp: bool=False,
-                              sp_reduction_frac: float=0.0) -> float:
+                                agg_shape: str, uses_sp: bool=False,
+                                sp_reduction_frac: float=0.0) -> float:
     base = WATER_BASELINE.get(int(nom_max_mm), 186.0)
     # IS 10262: Increase water by ~3% for every 25mm slump increase over 50mm
     if slump_mm <= 50: water = base
@@ -788,8 +788,8 @@ if st.session_state.get('run_generation', False):
                         st.dataframe(trace_df.style.apply(lambda s: ['background-color: #e8f5e9' if v else 'background-color: #ffebee' for v in s], subset=['feasible']), use_container_width=True)
                         st.markdown("#### CO₂ vs. Cost of All Candidate Mixes")
                         fig, ax = plt.subplots()
-                        colors = ["#4CAF50" if f else "#F44336" for f in trace_df["feasible"]]
-                        ax.scatter(trace_df["cost"], trace_df["co2"], c=colors, alpha=0.6)
+                        scatter_colors = ["#4CAF50" if f else "#F44336" for f in trace_df["feasible"]]
+                        ax.scatter(trace_df["cost"], trace_df["co2"], c=scatter_colors, alpha=0.6)
                         ax.set_xlabel("Material Cost (₹/m³)")
                         ax.set_ylabel("Embodied Carbon (kg CO₂e/m³)")
                         ax.grid(True, linestyle='--', alpha=0.6)
