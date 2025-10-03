@@ -16,13 +16,15 @@ from io import BytesIO, StringIO
 import json
 import traceback
 import re
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
+from matplotlib.ticker import ScalarFormatter
+
 
 # ==============================================================================
-# PART 1: BACKEND LOGIC (CORRECTED & ENHANCED)
+# PART 1: BACKEND LOGIC (CORRECTED & ENHANCED) - DO NOT MODIFY
 # ==============================================================================
 
 # Groq client (optional)
@@ -294,7 +296,7 @@ def run_lab_calibration(lab_df):
     return results_df, metrics
 
 # ==============================================================================
-# PART 2: CORE MIX LOGIC (UPDATED)
+# PART 2: CORE MIX LOGIC (UPDATED) - DO NOT MODIFY
 # ==============================================================================
 
 def evaluate_mix(components_dict, emissions_df, costs_df=None):
@@ -561,10 +563,68 @@ def apply_parser(user_text, current_inputs):
 # PART 3: REFACTORED USER INTERFACE
 # ==============================================================================
 
+# --- UI Helper Functions (New) ---
+def plot_gradation_chart(user_df, limits_dict, title, zone_name=""):
+    """Generates a matplotlib figure for sieve gradation analysis."""
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    # Prepare limits data
+    sieves = sorted([float(k) for k in limits_dict.keys()], reverse=True)
+    lower_bounds = [limits_dict[str(s)][0] if str(s) in limits_dict else limits_dict[s][0] for s in sieves]
+    upper_bounds = [limits_dict[str(s)][1] if str(s) in limits_dict else limits_dict[s][1] for s in sieves]
+
+
+    # Plot IS 383 limits
+    ax.plot(sieves, upper_bounds, 'r--', label='IS 383 Upper Limit')
+    ax.plot(sieves, lower_bounds, 'r--', label='IS 383 Lower Limit')
+    ax.fill_between(sieves, lower_bounds, upper_bounds, color='red', alpha=0.1, label=f'IS 383 Compliance Zone {zone_name}')
+
+    # Plot user data
+    user_df['Sieve_mm_num'] = pd.to_numeric(user_df['Sieve_mm'])
+    user_df_sorted = user_df.sort_values('Sieve_mm_num', ascending=False)
+    ax.plot(user_df_sorted['Sieve_mm_num'], user_df_sorted['PercentPassing'], 'b-o', label='Uploaded Aggregate', zorder=10)
+
+    # Formatting
+    ax.set_xscale('log')
+    ax.xaxis.set_major_formatter(ScalarFormatter())
+    ax.set_xticks([s for s in sieves if s > 0.1])
+    ax.minorticks_off()
+    ax.set_xlabel("Sieve Size (mm) - Log Scale")
+    ax.set_ylabel("Percent Passing (%)")
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_ylim(0, 105)
+    ax.grid(True, which="both", ls="--", alpha=0.5)
+    ax.legend()
+    plt.gca().invert_xaxis() # Standard practice for gradation charts
+    return fig
+
+def generate_pareto_plot_fig(feasible_mixes, pareto_df, opt_meta, best_compromise_mix, optimize_for):
+    """Generates a reusable matplotlib figure of the Pareto front."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    if not feasible_mixes.empty:
+        # All feasible candidate mixes
+        ax.scatter(feasible_mixes["cost"], feasible_mixes["co2"], color='grey', alpha=0.4, label='All Feasible Mixes')
+    if not pareto_df.empty:
+        # Pareto front mixes
+        ax.plot(pareto_df["cost"], pareto_df["co2"], '-o', color='#2196F3', label='Pareto Front (Efficient Mixes)')
+    # Primary optimized mix (the one with lowest CO2 or Cost)
+    ax.plot(opt_meta['cost_total'], opt_meta['co2_total'], '*', markersize=18, color='#F44336', label=f'Chosen Mix (Lowest {optimize_for.split(" ")[1]})', zorder=12)
+    # Best compromise mix from slider
+    if best_compromise_mix is not None:
+        ax.plot(best_compromise_mix['cost'], best_compromise_mix['co2'], 'D', markersize=12, color='#4CAF50', label='Best Compromise (from slider)', zorder=11, markeredgecolor='black')
+
+    ax.set_xlabel("Material Cost (₹/m³)", fontsize=12)
+    ax.set_ylabel("Embodied Carbon (kg CO₂e / m³)", fontsize=12)
+    ax.set_title("Pareto Front of Feasible Concrete Mixes", fontsize=14, fontweight='bold')
+    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.legend()
+    return fig
+
+
 # --- Page Styling ---
 st.markdown("""
 <style>
-    /* Center the title and main interface elements */
+    /* Main container and layout */
     .main .block-container {
         padding-top: 2rem;
         padding-bottom: 2rem;
@@ -578,6 +638,58 @@ st.markdown("""
     .stTextArea [data-baseweb=base-input] {
         border-color: #4A90E2;
         box-shadow: 0 0 5px #4A90E2;
+        background-color: #f0f8ff; /* Light blue background */
+    }
+    /* Custom metric styles */
+    .stMetric {
+        background-color: #FFFFFF;
+        border: 1px solid #E0E0E0;
+        border-left: 6px solid #4A90E2; /* Blue accent */
+        padding: 1rem;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .stMetric[data-testid="stMetricValue"] {
+        font-size: 2.2em;
+    }
+    /* Custom badge styles */
+    .badge-compliant {
+        background-color: #e8f5e9; /* Light green */
+        color: #2e7d32; /* Dark green */
+        padding: 10px;
+        border-radius: 5px;
+        border-left: 5px solid #4CAF50;
+        font-weight: bold;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .badge-non-compliant {
+        background-color: #ffebee; /* Light red */
+        color: #c62828; /* Dark red */
+        padding: 10px;
+        border-radius: 5px;
+        border-left: 5px solid #F44336;
+        font-weight: bold;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    /* Glowing effect for the winning column */
+    .glow-success {
+        border: 2px solid #4CAF50;
+        border-radius: 10px;
+        box-shadow: 0 0 15px #4CAF50;
+        animation: glow-animation 2s infinite alternate;
+        padding: 1rem;
+        background-color: #f1f8e9; /* Very light green */
+    }
+    @keyframes glow-animation {
+        from { box-shadow: 0 0 5px #4CAF50; }
+        to { box-shadow: 0 0 20px #66BB6A; }
+    }
+    /* Center align tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+        justify-content: center;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -585,7 +697,8 @@ st.markdown("""
 
 # --- Landing Page / Main Interface ---
 st.title("🧱 CivilGPT: Sustainable Concrete Mix Designer")
-st.markdown("##### An AI-powered tool for creating **IS 10262:2019 compliant** concrete mixes, optimized for low carbon footprint.")
+st.markdown("<h4 style='text-align: center; color: #4A90E2;'>An AI-powered tool for creating <b>IS 10262:2019 compliant</b> concrete mixes, optimized for low carbon footprint.</h4>", unsafe_allow_html=True)
+st.markdown("---")
 
 # Main input area
 col1, col2 = st.columns([0.7, 0.3])
@@ -602,7 +715,7 @@ with col2:
     st.write("")
     run_button = st.button("🚀 Generate Mix Design", use_container_width=True, type="primary")
 
-manual_mode = st.toggle("⚙️ Switch to Advanced Manual Input")
+manual_mode = st.toggle("⚙️ Switch to Advanced Manual Input", help="Toggle for detailed control over all mix design parameters.")
 
 # --- Sidebar for Manual Inputs ---
 if 'user_text_input' not in st.session_state:
@@ -880,11 +993,10 @@ if st.session_state.get('run_generation', False):
             st.success(f"Successfully generated mix designs for **{inputs['grade']}** concrete in **{inputs['exposure']}** conditions.", icon="✅")
 
             # --- Results Display ---
-            tab1, tab2, tab3, tab_pareto, tab4, tab5, tab6 = st.tabs([
+            tab1, tab2, tab_pareto, tab4, tab5, tab6 = st.tabs([
                 "📊 **Overview**",
-                "🌱 **Optimized Mix**",
-                "🏗️ **Baseline Mix**",
-                "⚖️ **Trade-off Explorer (Pareto Front)**",
+                "🌱 **Mix Comparison**",
+                "⚖️ **Trade-off Explorer**",
                 "📋 **QA/QC & Gradation**",
                 "📥 **Downloads & Reports**",
                 "🔬 **Lab Calibration**"
@@ -899,8 +1011,8 @@ if st.session_state.get('run_generation', False):
 
                 st.subheader("Performance At a Glance")
                 c1, c2, c3 = st.columns(3)
-                c1.metric("🌱 CO₂ Reduction", f"{reduction:.1f}%", f"{co2_base - co2_opt:.1f} kg/m³ saved")
-                c2.metric("💰 Cost Savings", f"₹{cost_savings:,.0f} / m³", f"{cost_savings/cost_base*100 if cost_base>0 else 0:.1f}% cheaper")
+                c1.metric("🌱 CO₂ Reduction", f"{reduction:.1f}%", f"{co2_base - co2_opt:.1f} kg/m³ saved", help="Percentage reduction in embodied carbon compared to the standard OPC baseline mix.")
+                c2.metric("💰 Cost Savings", f"₹{cost_savings:,.0f} / m³", f"{cost_savings/cost_base*100 if cost_base>0 else 0:.1f}% cheaper", help="Cost difference per cubic meter compared to the baseline mix.")
                 c3.metric("♻️ SCM Content", f"{opt_meta['scm_total_frac']*100:.0f}%", f"{base_meta['scm_total_frac']*100:.0f}% in baseline", help="Supplementary Cementitious Materials (Fly Ash, GGBS) replace high-carbon cement.")
                 st.markdown("---")
 
@@ -909,7 +1021,7 @@ if st.session_state.get('run_generation', False):
                     st.subheader("📊 Embodied Carbon (CO₂e)")
                     chart_data = pd.DataFrame({'Mix Type': ['Baseline OPC', 'CivilGPT Optimized'], 'CO₂ (kg/m³)': [co2_base, co2_opt]})
                     fig, ax = plt.subplots(figsize=(6, 4))
-                    bars = ax.bar(chart_data['Mix Type'], chart_data['CO₂ (kg/m³)'], color=['#D3D3D3', '#4CAF50'])
+                    bars = ax.bar(chart_data['Mix Type'], chart_data['CO₂ (kg/m³)'], color=['#B0BEC5', '#4CAF50'])
                     ax.set_ylabel("Embodied Carbon (kg CO₂e / m³)")
                     ax.bar_label(bars, fmt='{:,.1f}')
                     st.pyplot(fig)
@@ -917,7 +1029,7 @@ if st.session_state.get('run_generation', False):
                     st.subheader("💵 Material Cost")
                     chart_data_cost = pd.DataFrame({'Mix Type': ['Baseline OPC', 'CivilGPT Optimized'], 'Cost (₹/m³)': [cost_base, cost_opt]})
                     fig2, ax2 = plt.subplots(figsize=(6, 4))
-                    bars2 = ax2.bar(chart_data_cost['Mix Type'], chart_data_cost['Cost (₹/m³)'], color=['#D3D3D3', '#2196F3'])
+                    bars2 = ax2.bar(chart_data_cost['Mix Type'], chart_data_cost['Cost (₹/m³)'], color=['#B0BEC5', '#2196F3'])
                     ax2.set_ylabel("Material Cost (₹ / m³)")
                     ax2.bar_label(bars2, fmt='₹{:,.0f}')
                     st.pyplot(fig2)
@@ -931,47 +1043,42 @@ if st.session_state.get('run_generation', False):
                     """)
 
             def display_mix_details(title, df, meta, exposure):
-                st.header(title)
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("💧 Water/Binder Ratio", f"{meta['w_b']:.3f}")
-                c2.metric("📦 Total Binder (kg/m³)", f"{meta['cementitious']:.1f}")
-                c3.metric("🎯 Target Strength (MPa)", f"{meta['fck_target']:.1f}")
-                c4.metric("⚖️ Unit Weight (kg/m³)", f"{df['Quantity (kg/m3)'].sum():.1f}")
+                is_feasible, fail_reasons, warnings, derived, checks_dict = check_feasibility(df, meta, exposure)
 
-                st.subheader("Mix Proportions (per m³)")
-                # UI PATCH: Add explanatory note for CO2 factors.
-                st.info(
-                    "CO₂ factors represent cradle-to-gate emissions: the amount of CO₂ released per kg of material during its manufacture. These values do not reduce the material mass in the mix — they are an environmental footprint, not a physical subtraction.",
-                    icon="ℹ️"
-                )
-                st.dataframe(df.style.format({
+                if is_feasible:
+                    st.markdown('<div class="badge-compliant">✅ IS 10262 Compliant</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown(f'<div class="badge-non-compliant">❌ Non-Compliant: {", ".join(fail_reasons)}</div>', unsafe_allow_html=True)
+
+                st.subheader(title)
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("💧 Water/Binder Ratio", f"{meta['w_b']:.3f}", help="Lower W/B ratio generally leads to higher strength and better durability.")
+                c2.metric("📦 Total Binder (kg/m³)", f"{meta['cementitious']:.1f}", help="Total mass of all cementitious materials (Cement + SCMs).")
+                c3.metric("🎯 Target Strength (MPa)", f"{meta['fck_target']:.1f}", help="f_target = fck + 1.65 * S. This is the strength the mix is designed for to ensure the characteristic strength (fck) is met on site.")
+                c4.metric("⚖️ Unit Weight (kg/m³)", f"{df['Quantity (kg/m3)'].sum():.1f}", help="Total mass of the concrete per cubic meter.")
+
+                st.markdown("##### Mix Proportions (per m³)")
+                styled_df = df.style.format({
                     "Quantity (kg/m3)": "{:.2f}",
                     "CO2_Factor(kg_CO2_per_kg)": "{:.3f}",
                     "CO2_Emissions (kg/m3)": "{:.2f}",
                     "Cost(₹/kg)": "₹{:.2f}",
                     "Cost (₹/m3)": "₹{:.2f}"
-                }), use_container_width=True)
+                }).background_gradient(cmap='Greens', subset=['CO2_Emissions (kg/m3)']) \
+                  .background_gradient(cmap='Blues', subset=['Cost (₹/m3)'])
 
-                st.subheader("Compliance & Sanity Checks (IS 10262 & IS 456)")
-                is_feasible, fail_reasons, warnings, derived, checks_dict = check_feasibility(df, meta, exposure)
-
-                if is_feasible:
-                    st.success("✅ This mix design is compliant with IS code requirements.", icon="👍")
-                else:
-                    st.error(f"❌ This mix fails {len(fail_reasons)} IS code compliance check(s): " + ", ".join(fail_reasons), icon="🚨")
+                st.dataframe(styled_df, use_container_width=True)
 
                 if warnings:
-                    for warning in warnings:
-                        st.warning(warning, icon="⚠️")
-
-                with st.expander("Show detailed calculation parameters"):
-                    st.json(derived)
+                    with st.expander("⚠️ View Sanity Check Warnings"):
+                        for warning in warnings:
+                            st.warning(warning, icon="⚠️")
 
             # NEW: Calculation Walkthrough Function
             def display_calculation_walkthrough(meta):
-                st.header("Step-by-Step Calculation Walkthrough")
+                st.header("Step-by-Step Calculation Walkthrough (IS 10262:2019)")
                 st.markdown(f"""
-                This is a summary of how the **Optimized Mix** was designed according to **IS 10262:2019**.
+                This is a summary of how the **Optimized Mix** was designed.
 
                 #### 1. Target Mean Strength
                 - **Characteristic Strength (fck):** `{meta['fck']}` MPa (from Grade {meta['grade']})
@@ -1018,25 +1125,39 @@ if st.session_state.get('run_generation', False):
                     - **Coarse Aggregate:** **`{meta['coarse']:.1f}` kg/m³**
                 """)
 
-
-            # -- Optimized & Baseline Mix Tabs --
+            # -- Mix Comparison Tab --
             with tab2:
-                display_mix_details("🌱 Optimized Low-Carbon Mix Design", opt_df, opt_meta, inputs['exposure'])
-                # FIX: Add toggle for step-by-step walkthrough under the Optimized Mix tab
-                if st.toggle("📖 Show Step-by-Step IS Calculation", key="toggle_walkthrough_tab2"):
+                # Determine which mix is the "winner" based on the optimization goal
+                is_opt_winner = (not optimize_cost and opt_meta['co2_total'] < base_meta['co2_total']) or \
+                                (optimize_cost and opt_meta['cost_total'] < base_meta['cost_total'])
+
+                col_opt, col_base = st.columns(2)
+                with col_opt:
+                    if is_opt_winner:
+                        with st.container(border=False): # Use border=False for Streamlit > 1.30
+                            st.markdown('<div class="glow-success">', unsafe_allow_html=True)
+                            display_mix_details("🌱 Optimized Low-Carbon Mix Design", opt_df, opt_meta, inputs['exposure'])
+                            st.markdown('</div>', unsafe_allow_html=True)
+                    else:
+                        display_mix_details("🌱 Optimized Low-Carbon Mix Design", opt_df, opt_meta, inputs['exposure'])
+
+                with col_base:
+                     display_mix_details("🏗️ Standard OPC Baseline Mix", base_df, base_meta, inputs['exposure'])
+
+                st.markdown("---")
+                if st.toggle("📖 Show Step-by-Step IS Calculation for Optimized Mix", key="toggle_walkthrough_tab2"):
                     display_calculation_walkthrough(opt_meta)
 
-            with tab3:
-                display_mix_details("🏗️ Standard OPC Baseline Mix Design", base_df, base_meta, inputs['exposure'])
 
-            # -- NEW: Trade-off Explorer Tab --
+            # -- Trade-off Explorer Tab --
             with tab_pareto:
                 st.header("Cost vs. Carbon Trade-off Analysis")
-                st.markdown("This chart displays all IS-code compliant mixes found by the optimizer. The blue line represents the **Pareto Front**—the set of most efficient mixes where you can't improve one objective (e.g., lower CO₂) without worsening the other (e.g., increasing cost).")
+                st.markdown("This chart displays all IS-code compliant mixes found by the optimizer. The **blue line** represents the **Pareto Front**—the set of most efficient mixes where you can't improve one objective (e.g., lower CO₂) without worsening the other (e.g., increasing cost).")
 
                 if trace:
                     trace_df = pd.DataFrame(trace)
                     feasible_mixes = trace_df[trace_df['feasible']].copy()
+                    best_compromise_mix = None
 
                     if not feasible_mixes.empty:
                         pareto_df = pareto_front(feasible_mixes, x_col="cost", y_col="co2")
@@ -1060,30 +1181,18 @@ if st.session_state.get('run_generation', False):
                             best_compromise_mix = pareto_df_norm.loc[pareto_df_norm['score'].idxmin()]
 
                             # Plotting
-                            fig, ax = plt.subplots(figsize=(10, 6))
-
-                            # All feasible candidate mixes
-                            ax.scatter(feasible_mixes["cost"], feasible_mixes["co2"], color='grey', alpha=0.5, label='All Feasible Mixes')
-                            # Pareto front mixes
-                            ax.plot(pareto_df["cost"], pareto_df["co2"], '-o', color='blue', label='Pareto Front (Efficient Mixes)')
-                            # Primary optimized mix (the one with lowest CO2 or Cost)
-                            ax.plot(opt_meta['cost_total'], opt_meta['co2_total'], '*', markersize=15, color='red', label=f'Chosen Mix (Lowest {optimize_for.split(" ")[1]})')
-                            # Best compromise mix from slider
-                            ax.plot(best_compromise_mix['cost'], best_compromise_mix['co2'], 'D', markersize=10, color='green', label='Best Compromise (from slider)')
-
-                            ax.set_xlabel("Material Cost (₹/m³)")
-                            ax.set_ylabel("Embodied Carbon (kg CO₂e / m³)")
-                            ax.set_title("Pareto Front of Feasible Concrete Mixes")
-                            ax.grid(True, linestyle='--', alpha=0.6)
-                            ax.legend()
-                            st.pyplot(fig)
+                            pareto_fig = generate_pareto_plot_fig(feasible_mixes, pareto_df, opt_meta, best_compromise_mix, optimize_for)
+                            st.pyplot(pareto_fig)
 
                             st.markdown("---")
                             st.subheader("Details of Selected 'Best Compromise' Mix")
-                            c1, c2, c3 = st.columns(3)
+                            st.info("This point represents the optimal trade-off on the Pareto Front based on your current slider preference.", icon="🎯")
+
+                            c1, c2, c3, c4 = st.columns(4)
                             c1.metric("💰 Cost", f"₹{best_compromise_mix['cost']:.0f} / m³")
                             c2.metric("🌱 CO₂", f"{best_compromise_mix['co2']:.1f} kg / m³")
                             c3.metric("💧 Water/Binder Ratio", f"{best_compromise_mix['wb']:.3f}")
+                            c4.metric("♻️ SCM (Fly Ash %)", f"{best_compromise_mix['flyash_frac']*100:.0f}%")
 
                         else:
                             st.info("No Pareto front could be determined from the feasible mixes.", icon="ℹ️")
@@ -1095,22 +1204,27 @@ if st.session_state.get('run_generation', False):
 
             # -- QA/QC & Gradation Tab --
             with tab4:
-                st.header("Quality Assurance & Sieve Analysis")
+                st.header("Quality Assurance & Sieve Analysis (IS 383)")
 
-                # FIX: Add sample file downloads
-                sample_fa_data = "Sieve_mm,PercentPassing\n4.75,95\n2.36,80\n1.18,60\n0.600,40\n0.300,15\n0.150,5"
+                sample_fa_data = "Sieve_mm,PercentPassing\n10.0,100\n4.75,95\n2.36,80\n1.18,60\n0.600,40\n0.300,15\n0.150,5"
                 sample_ca_data = "Sieve_mm,PercentPassing\n40.0,100\n20.0,98\n10.0,40\n4.75,5"
 
                 col1, col2 = st.columns(2)
                 with col1:
                     st.subheader("Fine Aggregate Gradation")
                     if fine_csv is not None:
-                        df_fine = pd.read_csv(fine_csv)
-                        ok_fa, msgs_fa = sieve_check_fa(df_fine, inputs.get("fine_zone", "Zone II"))
-                        if ok_fa: st.success(msgs_fa[0], icon="✅")
-                        else:
-                            for m in msgs_fa: st.error(m, icon="❌")
-                        st.dataframe(df_fine, use_container_width=True)
+                        try:
+                            df_fine = pd.read_csv(fine_csv)
+                            ok_fa, msgs_fa = sieve_check_fa(df_fine, inputs.get("fine_zone", "Zone II"))
+                            if ok_fa: st.success(msgs_fa[0], icon="✅")
+                            else:
+                                for m in msgs_fa: st.error(m, icon="❌")
+                            # Plot Gradation Chart
+                            fig_fa = plot_gradation_chart(df_fine, FINE_AGG_ZONE_LIMITS[inputs['fine_zone']], "Fine Aggregate Gradation vs. IS 383", f"({inputs['fine_zone']})")
+                            st.pyplot(fig_fa)
+                        except Exception as e:
+                            st.error(f"Could not process Fine Aggregate CSV: {e}")
+
                     else:
                         st.info("Upload a Fine Aggregate CSV in the sidebar to perform a gradation check against IS 383.", icon="ℹ️")
                         st.download_button(
@@ -1122,12 +1236,17 @@ if st.session_state.get('run_generation', False):
                 with col2:
                     st.subheader("Coarse Aggregate Gradation")
                     if coarse_csv is not None:
-                        df_coarse = pd.read_csv(coarse_csv)
-                        ok_ca, msgs_ca = sieve_check_ca(df_coarse, inputs["nom_max"])
-                        if ok_ca: st.success(msgs_ca[0], icon="✅")
-                        else:
-                            for m in msgs_ca: st.error(m, icon="❌")
-                        st.dataframe(df_coarse, use_container_width=True)
+                        try:
+                            df_coarse = pd.read_csv(coarse_csv)
+                            ok_ca, msgs_ca = sieve_check_ca(df_coarse, inputs["nom_max"])
+                            if ok_ca: st.success(msgs_ca[0], icon="✅")
+                            else:
+                                for m in msgs_ca: st.error(m, icon="❌")
+                            # Plot Gradation Chart
+                            fig_ca = plot_gradation_chart(df_coarse, COARSE_LIMITS[int(inputs['nom_max'])], f"Coarse Aggregate Gradation ({inputs['nom_max']}mm) vs. IS 383")
+                            st.pyplot(fig_ca)
+                        except Exception as e:
+                            st.error(f"Could not process Coarse Aggregate CSV: {e}")
                     else:
                         st.info("Upload a Coarse Aggregate CSV in the sidebar to perform a gradation check against IS 383.", icon="ℹ️")
                         st.download_button(
@@ -1138,23 +1257,11 @@ if st.session_state.get('run_generation', False):
                         )
 
                 st.markdown("---")
-                # NEW: Added calculation walkthrough expander
-                with st.expander("📖 View Step-by-Step Calculation Walkthrough"):
-                    display_calculation_walkthrough(opt_meta)
-
                 with st.expander("🔬 View Optimizer Trace (Advanced)"):
                     if trace:
                         trace_df = pd.DataFrame(trace)
                         st.markdown("The table below shows every mix combination attempted by the optimizer. 'Feasible' mixes met all IS-code checks.")
                         st.dataframe(trace_df.style.apply(lambda s: ['background-color: #e8f5e9' if v else 'background-color: #ffebee' for v in s], subset=['feasible']), use_container_width=True)
-                        st.markdown("#### CO₂ vs. Cost of All Candidate Mixes")
-                        fig, ax = plt.subplots()
-                        scatter_colors = ["#4CAF50" if f else "#F44336" for f in trace_df["feasible"]]
-                        ax.scatter(trace_df["cost"], trace_df["co2"], c=scatter_colors, alpha=0.6)
-                        ax.set_xlabel("Material Cost (₹/m³)")
-                        ax.set_ylabel("Embodied Carbon (kg CO₂e/m³)")
-                        ax.grid(True, linestyle='--', alpha=0.6)
-                        st.pyplot(fig)
                     else:
                         st.info("Trace not available.")
 
@@ -1165,45 +1272,72 @@ if st.session_state.get('run_generation', False):
                 # Excel Report
                 excel_buffer = BytesIO()
                 with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
+                    # Create a side-by-side comparison DataFrame
+                    comp_df = opt_df[['Material', 'Quantity (kg/m3)']].copy().rename(columns={'Quantity (kg/m3)': 'Optimized Mix (kg/m3)'})
+                    comp_df = comp_df.merge(base_df[['Material', 'Quantity (kg/m3)']], on='Material', how='outer').rename(columns={'Quantity (kg/m3)': 'Baseline Mix (kg/m3)'}).fillna(0)
+                    comp_df.to_excel(writer, sheet_name="Side-by-Side Comparison", index=False)
+
+                    # Individual sheets
                     opt_df.to_excel(writer, sheet_name="Optimized_Mix", index=False)
                     base_df.to_excel(writer, sheet_name="Baseline_Mix", index=False)
                     pd.DataFrame([opt_meta]).T.to_excel(writer, sheet_name="Optimized_Meta")
                     pd.DataFrame([base_meta]).T.to_excel(writer, sheet_name="Baseline_Meta")
+                excel_buffer.seek(0)
 
                 # PDF Report
                 pdf_buffer = BytesIO()
-                doc = SimpleDocTemplate(pdf_buffer, pagesize=(8.5*inch, 11*inch))
+                doc = SimpleDocTemplate(pdf_buffer, pagesize=(8.5*inch, 11*inch), topMargin=0.5*inch, bottomMargin=0.5*inch)
                 styles = getSampleStyleSheet()
                 story = [Paragraph("CivilGPT Sustainable Mix Report", styles['h1']), Spacer(1, 0.2*inch)]
+                story.append(Paragraph(f"<b>Design for:</b> {inputs['grade']} / {inputs['exposure']} Exposure / {inputs['target_slump']}mm Slump", styles['h2']))
 
-                # Summary table
-                summary_data = [
-                    ["Metric", "Optimized Mix", "Baseline Mix"],
-                    ["CO₂ (kg/m³)", f"{opt_meta['co2_total']:.1f}", f"{base_meta['co2_total']:.1f}"],
-                    ["Cost (₹/m³)", f"₹{opt_meta['cost_total']:,.2f}", f"₹{base_meta['cost_total']:,.2f}"],
-                    ["w/b Ratio", f"{opt_meta['w_b']:.3f}", f"{base_meta['w_b']:.3f}"],
-                    ["Binder (kg/m³)", f"{opt_meta['cementitious']:.1f}", f"{base_meta['cementitious']:.1f}"],
+                # Side by side tables in PDF
+                left_data = [["Optimized Mix", ""]] + [[k, f"{v:.2f}"] for k,v in opt_df.set_index('Material')['Quantity (kg/m3)'].to_dict().items()]
+                right_data = [["Baseline Mix", ""]] + [[k, f"{v:.2f}"] for k,v in base_df.set_index('Material')['Quantity (kg/m3)'].to_dict().items()]
+                max_rows = max(len(left_data), len(right_data))
+                # Pad shorter table
+                while len(left_data) < max_rows: left_data.append(["",""])
+                while len(right_data) < max_rows: right_data.append(["",""])
+
+                side_by_side_data = [
+                    [Paragraph(f"<b>{l[0]}</b>", styles['Normal']), l[1], "", Paragraph(f"<b>{r[0]}</b>", styles['Normal']), r[1]]
+                    for l, r in zip(left_data, right_data)
                 ]
-                summary_table = Table(summary_data, hAlign='LEFT', colWidths=[2*inch, 1.5*inch, 1.5*inch])
-                summary_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 1, colors.black), ('BACKGROUND', (0,0), (-1,0), colors.lightgrey)]))
-                story.extend([Paragraph(f"Design for <b>{inputs['grade']} / {inputs['exposure']} Exposure</b>", styles['h2']), summary_table, Spacer(1, 0.2*inch)])
 
-                # Optimized Mix Table
-                opt_data_pdf = [opt_df.columns.values.tolist()] + opt_df.values.tolist()
-                opt_table = Table(opt_data_pdf, hAlign='LEFT')
-                opt_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 1, colors.black), ('BACKGROUND', (0,0), (-1,0), colors.palegreen)]))
-                story.extend([Paragraph("Optimized Mix Proportions (kg/m³)", styles['h2']), opt_table])
+                pdf_table = Table(side_by_side_data, hAlign='LEFT', colWidths=[2.0*inch, 1.0*inch, 0.5*inch, 2.0*inch, 1.0*inch])
+                pdf_table.setStyle(TableStyle([
+                    ('GRID', (0,0), (1,-1), 1, colors.black),
+                    ('GRID', (3,0), (4,-1), 1, colors.black),
+                    ('BACKGROUND', (0,0), (1,0), colors.palegreen),
+                    ('BACKGROUND', (3,0), (4,0), colors.lightgrey),
+                ]))
+                story.extend([Spacer(1, 0.2*inch), pdf_table, Spacer(1, 0.2*inch)])
+
+                # Add Pareto plot to PDF
+                if 'trace' in locals() and trace:
+                    trace_df_pdf = pd.DataFrame(trace)
+                    feasible_mixes_pdf = trace_df_pdf[trace_df_pdf['feasible']].copy()
+                    if not feasible_mixes_pdf.empty:
+                        pareto_df_pdf = pareto_front(feasible_mixes_pdf, x_col="cost", y_col="co2")
+                        pdf_pareto_fig = generate_pareto_plot_fig(feasible_mixes_pdf, pareto_df_pdf, opt_meta, None, optimize_for)
+                        img_buffer = BytesIO()
+                        pdf_pareto_fig.savefig(img_buffer, format='PNG', bbox_inches='tight', dpi=150)
+                        img_buffer.seek(0)
+                        pareto_image = Image(img_buffer, width=6*inch, height=4*inch)
+                        story.append(Spacer(1, 0.3*inch))
+                        story.append(pareto_image)
+
                 doc.build(story)
+                pdf_buffer.seek(0)
 
                 d1, d2 = st.columns(2)
                 with d1:
-                    st.download_button("📄 Download PDF Report", data=pdf_buffer.getvalue(), file_name="CivilGPT_Report.pdf", mime="application/pdf", use_container_width=True)
-                    st.download_button("📈 Download Excel Report", data=excel_buffer.getvalue(), file_name="CivilGPT_Mix_Designs.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+                    st.download_button("📄 Download PDF Report", data=pdf_buffer, file_name="CivilGPT_Report.pdf", mime="application/pdf", use_container_width=True)
                 with d2:
-                    st.download_button("✔️ Optimized Mix (CSV)", data=opt_df.to_csv(index=False).encode("utf-8"), file_name="optimized_mix.csv", mime="text/csv", use_container_width=True)
-                    st.download_button("✖️ Baseline Mix (CSV)", data=base_df.to_csv(index=False).encode("utf-8"), file_name="baseline_mix.csv", mime="text/csv", use_container_width=True)
+                    st.download_button("📈 Download Excel Report", data=excel_buffer, file_name="CivilGPT_Mix_Designs.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
 
-            # -- NEW: Lab Calibration Tab --
+
+            # -- Lab Calibration Tab --
             with tab6:
                 st.header("🔬 Lab Calibration Analysis")
                 if lab_csv is not None:
@@ -1216,9 +1350,9 @@ if st.session_state.get('run_generation', False):
                             st.subheader("Error Metrics")
                             st.markdown("Comparing lab-tested 28-day strength against the IS code's required target strength (`f_target = fck + 1.65 * S`).")
                             m1, m2, m3 = st.columns(3)
-                            m1.metric(label="Mean Absolute Error (MAE)", value=f"{error_metrics['Mean Absolute Error (MPa)']:.2f} MPa")
-                            m2.metric(label="Root Mean Squared Error (RMSE)", value=f"{error_metrics['Root Mean Squared Error (MPa)']:.2f} MPa")
-                            m3.metric(label="Mean Bias (Over/Under-prediction)", value=f"{error_metrics['Mean Bias (MPa)']:.2f} MPa")
+                            m1.metric(label="Mean Absolute Error (MAE)", value=f"{error_metrics['Mean Absolute Error (MPa)']:.2f} MPa", help="The average absolute difference between predicted target and actual lab strength.")
+                            m2.metric(label="Root Mean Squared Error (RMSE)", value=f"{error_metrics['Root Mean Squared Error (MPa)']:.2f} MPa", help="A measure of the error magnitude, giving higher weight to large errors.")
+                            m3.metric(label="Mean Bias (Over/Under-prediction)", value=f"{error_metrics['Mean Bias (MPa)']:.2f} MPa", help="Positive value means the model, on average, predicts a higher target strength than achieved. Negative means it predicts lower.")
                             st.markdown("---")
 
                             st.subheader("Comparison: Lab vs. Predicted Target Strength")
@@ -1226,11 +1360,11 @@ if st.session_state.get('run_generation', False):
                                 "Lab Strength (MPa)": "{:.2f}",
                                 "Predicted Target Strength (MPa)": "{:.2f}",
                                 "Error (MPa)": "{:+.2f}"
-                            }), use_container_width=True)
+                            }).background_gradient(cmap='RdYlGn_r', subset=['Error (MPa)']), use_container_width=True)
 
                             st.subheader("Prediction Accuracy Scatter Plot")
                             fig, ax = plt.subplots()
-                            ax.scatter(comparison_df["Lab Strength (MPa)"], comparison_df["Predicted Target Strength (MPa)"], alpha=0.7, label="Data Points")
+                            ax.scatter(comparison_df["Lab Strength (MPa)"], comparison_df["Predicted Target Strength (MPa)"], alpha=0.7, label="Data Points", edgecolors='k')
                             # Add y=x line
                             lims = [
                                 np.min([ax.get_xlim(), ax.get_ylim()]),
