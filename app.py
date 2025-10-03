@@ -144,10 +144,19 @@ def load_data(materials_file=None, emissions_file=None, cost_file=None):
     if emissions is None:
         try: emissions = _read_csv_try("emission_factors.csv")
         except: emissions = pd.DataFrame(columns=["Material","CO2_Factor(kg_CO2_per_kg)"])
-    if costs is None:
-        try: costs = _read_csv_try("cost_factors.csv")
-        except: costs = pd.DataFrame(columns=["Material","Cost(₹/kg)"])
-    return materials, emissions, costs
+    if costs is None or costs.empty:
+    found = False
+    for p in ["cost_factors.csv", "data/cost_factors.csv"]:
+        if os.path.exists(p):
+            try:
+                costs = pd.read_csv(p)
+                found = True
+                break
+            except Exception as e:
+                st.warning(f"Could not read {p}: {e}")
+    if not found:
+        costs = pd.DataFrame(columns=["Material","Cost(₹/kg)"])
+
 
 def water_for_slump_and_shape(nom_max_mm: int, slump_mm: int,
                                 agg_shape: str, uses_sp: bool=False,
@@ -956,3 +965,4 @@ elif not st.session_state.get('clarification_needed'):
     3.  **Sustainability Optimization**: It then calculates the embodied carbon (CO₂e) and cost for every compliant mix.
     4.  **Best Mix Selection**: Finally, it presents the mix with the lowest carbon footprint (or cost) alongside a standard OPC baseline for comparison.
     """)
+
