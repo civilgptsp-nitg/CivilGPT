@@ -178,6 +178,34 @@ def load_data(materials_file=None, emissions_file=None, cost_file=None):
 
     return materials, emissions, costs
 
+# NEW: Helper function for Pareto Front calculation
+def pareto_front(df, x_col="cost", y_col="co2"):
+    """
+    Computes the Pareto front for a 2D set of points.
+    Assumes minimization for both objectives (x and y).
+    """
+    if df.empty:
+        return pd.DataFrame(columns=df.columns)
+
+    # Sort the dataframe by the first objective (cost), then by the second for tie-breaking
+    sorted_df = df.sort_values(by=[x_col, y_col], ascending=[True, True])
+
+    pareto_points = []
+    last_y = float('inf')
+
+    for _, row in sorted_df.iterrows():
+        # A point is on the Pareto front if its second objective (co2)
+        # is better (lower) than the last point added to the front.
+        if row[y_col] < last_y:
+            pareto_points.append(row)
+            last_y = row[y_col]
+
+    if not pareto_points:
+        return pd.DataFrame(columns=df.columns)
+
+    return pd.DataFrame(pareto_points).reset_index(drop=True)
+
+
 def water_for_slump_and_shape(nom_max_mm: int, slump_mm: int,
                                   agg_shape: str, uses_sp: bool=False,
                                   sp_reduction_frac: float=0.0) -> float:
@@ -209,9 +237,9 @@ def get_coarse_agg_fraction(nom_max_mm: float, fa_zone: str, wb_ratio: float):
     # And vice-versa for an increase in w/b ratio.
     wb_diff = 0.50 - wb_ratio
     correction = (wb_diff / 0.05) * 0.01
-    
+
     corrected_fraction = base_fraction + correction
-    
+
     # Ensure fraction is within reasonable bounds (e.g., 0.4 to 0.8)
     return max(0.4, min(0.8, corrected_fraction))
 
@@ -275,7 +303,7 @@ def evaluate_mix(components_dict, emissions_df, costs_df=None):
     emissions_df = emissions_df.copy()
     emissions_df["Material_norm"] = emissions_df["Material"].str.strip().str.lower()
     df = comp_df.merge(emissions_df[["Material_norm","CO2_Factor(kg_CO2_per_kg)"]],
-                           on="Material_norm", how="left")
+                            on="Material_norm", how="left")
     if "CO2_Factor(kg_CO2_per_kg)" not in df.columns:
         df["CO2_Factor(kg_CO2_per_kg)"] = 0.0
     df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
@@ -299,7 +327,7 @@ def evaluate_mix(components_dict, emissions_df, costs_df=None):
         # This ensures the app functions correctly and the output format is consistent.
         df["Cost(₹/kg)"] = 0.0
         df["Cost (₹/m3)"] = 0.0
-    
+
     df["Material"] = df["Material_norm"].str.title()
     # Ensure the final returned DataFrame has all the required columns in the correct order.
     return df[["Material","Quantity (kg/m3)","CO2_Factor(kg_CO2_per_kg)","CO2_Emissions (kg/m3)","Cost(₹/kg)","Cost (₹/m3)"]]
@@ -317,7 +345,7 @@ def compute_aggregates(cementitious, water, sp, coarse_agg_fraction,
     vol_binder = vol_cem + vol_wat + vol_sp
     vol_agg = 1.0 - vol_binder
     if vol_agg <= 0: vol_agg = 0.60
-    
+
     vol_coarse = vol_agg * coarse_agg_fraction
     vol_fine = vol_agg * (1.0 - coarse_agg_fraction)
 
@@ -358,7 +386,7 @@ def sanity_check_mix(meta, df):
         cement, water, fine, coarse, sp = float(meta.get("cement", 0)), float(meta.get("water_target", 0)), float(meta.get("fine", 0)), float(meta.get("coarse", 0)), float(meta.get("sp", 0))
         unit_wt = float(df["Quantity (kg/m3)"].sum())
     except Exception: return ["Insufficient data to run sanity checks."]
-    
+
     # MODIFIED: Low-cement warning logic changed.
     # The previous check (cement < 250) was removed based on the requirement to not show the warning
     # if any valid IS-code compliant mix exists. Since this function is only called for a successful,
@@ -366,7 +394,7 @@ def sanity_check_mix(meta, df):
     # penalizing sustainable mixes (with high SCM content) that have lower OPC cement but meet all
     # IS-code requirements for total binder content.
     # if cement < 250: warnings.append(f"Low cement content ({cement:.1f} kg/m³). May affect durability.")
-    
+
     if cement > 500: warnings.append(f"High cement content ({cement:.1f} kg/m³). Increases cost, shrinkage, and CO₂.")
     if water < 140 or water > 220: warnings.append(f"Water content ({water:.1f} kg/m³) is outside the typical range of 140-220 kg/m³.")
     if fine < 500 or fine > 900: warnings.append(f"Fine aggregate quantity ({fine:.1f} kg/m³) is unusual.")
@@ -413,7 +441,7 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, e
     target_water = water_for_slump_and_shape(nom_max_mm=nom_max, slump_mm=int(target_slump), agg_shape=agg_shape, uses_sp=use_sp, sp_reduction_frac=sp_reduction)
     best_df, best_meta, best_score = None, None, float("inf")
     trace = []
-    
+
     # Use calibrated optimizer values
     wb_values = np.linspace(float(wb_min), float(w_b_limit), int(wb_steps))
     flyash_options = np.arange(0.0, max_flyash_frac + 1e-9, scm_step)
@@ -430,19 +458,19 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, e
                 # --- START: Auto-correction and binder calculation logic. ---
                 # This block considers strength (w/b), durability (min cement), and typical practice (grade range).
                 binder_for_strength = target_water / wb
-                
+
                 # Enforce minimums from exposure and grade range.
                 binder = max(binder_for_strength, min_cem_exp, min_b_grade)
                 # Enforce maximum from grade range.
                 binder = min(binder, max_b_grade)
-                
+
                 # This is the true w/b ratio of the final mix after adjustments
-                actual_wb = target_water / binder 
+                actual_wb = target_water / binder
                 # --- END: Auto-correction logic. ---
-                
+
                 cement, flyash, ggbs = binder * (1 - flyash_frac - ggbs_frac), binder * flyash_frac, binder * ggbs_frac
                 sp = 0.01 * binder if use_sp else 0.0 # Typical SP dosage is ~1% of binder
-                
+
                 # --- Aggregate Calculation with Material Properties ---
                 density_fa = material_props['sg_fa'] * 1000
                 density_ca = material_props['sg_ca'] * 1000
@@ -453,20 +481,20 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, e
                 else:
                     # IS-Code Compliant Logic, now using the actual w/b ratio for better accuracy
                     coarse_agg_frac = get_coarse_agg_fraction(nom_max, fine_zone, actual_wb)
-                
+
                 fine_ssd, coarse_ssd = compute_aggregates(binder, target_water, sp, coarse_agg_frac, density_fa, density_ca)
-                
+
                 # Apply moisture corrections
                 water_delta_fa, fine_wet = aggregate_correction(material_props['moisture_fa'], fine_ssd)
                 water_delta_ca, coarse_wet = aggregate_correction(material_props['moisture_ca'], coarse_ssd)
-                
+
                 # Final adjusted quantities for the mix
                 water_final = target_water - water_delta_fa - water_delta_ca
 
                 mix = {cement_choice: cement,"Fly Ash": flyash,"GGBS": ggbs,"Water": water_final,"PCE Superplasticizer": sp,"Fine Aggregate": fine_wet,"Coarse Aggregate": coarse_wet}
                 df = evaluate_mix(mix, emissions, costs)
                 co2_total, cost_total = float(df["CO2_Emissions (kg/m3)"].sum()), float(df["Cost (₹/m3)"].sum())
-                
+
                 # Use the actual_wb for reporting and compliance checks
                 candidate_meta = {"w_b": actual_wb, "cementitious": binder, "cement": cement, "flyash": flyash, "ggbs": ggbs, "water_target": target_water, "water_final": water_final, "sp": sp, "fine": fine_wet, "coarse": coarse_wet, "scm_total_frac": flyash_frac + ggbs_frac, "grade": grade, "exposure": exposure, "nom_max": nom_max, "slump": target_slump, "co2_total": co2_total, "cost_total": cost_total, "coarse_agg_fraction": coarse_agg_frac, "binder_range": (min_b_grade, max_b_grade), "material_props": material_props}
                 feasible, reasons_fail, _, _, _ = check_feasibility(df, candidate_meta, exposure)
@@ -479,20 +507,20 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, e
 def generate_baseline(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, emissions, costs, cement_choice, material_props, use_sp=True, sp_reduction=0.18):
     w_b_limit, min_cem_exp = float(EXPOSURE_WB_LIMITS[exposure]), float(EXPOSURE_MIN_CEMENT[exposure])
     water_target = water_for_slump_and_shape(nom_max_mm=nom_max, slump_mm=int(target_slump), agg_shape=agg_shape, uses_sp=use_sp, sp_reduction_frac=sp_reduction)
-    
+
     min_b_grade, max_b_grade = reasonable_binder_range(grade)
-    
+
     binder_for_wb = water_target / w_b_limit
     cementitious = max(binder_for_wb, min_cem_exp, min_b_grade)
     cementitious = min(cementitious, max_b_grade)
-    
+
     actual_wb = water_target / cementitious
-    
+
     sp = 0.01 * cementitious if use_sp else 0.0
 
     # UPDATED LOGIC: Get aggregate proportions from IS Code method
     coarse_agg_frac = get_coarse_agg_fraction(nom_max, fine_zone, actual_wb)
-    
+
     density_fa = material_props['sg_fa'] * 1000
     density_ca = material_props['sg_ca'] * 1000
     fine_ssd, coarse_ssd = compute_aggregates(cementitious, water_target, sp, coarse_agg_frac, density_fa, density_ca)
@@ -501,7 +529,7 @@ def generate_baseline(grade, exposure, nom_max, target_slump, agg_shape, fine_zo
     water_delta_fa, fine_wet = aggregate_correction(material_props['moisture_fa'], fine_ssd)
     water_delta_ca, coarse_wet = aggregate_correction(material_props['moisture_ca'], coarse_ssd)
     water_final = water_target - water_delta_fa - water_delta_ca
-    
+
     mix = {cement_choice: cementitious,"Fly Ash": 0.0,"GGBS": 0.0,"Water": water_final, "PCE Superplasticizer": sp,"Fine Aggregate": fine_wet,"Coarse Aggregate": coarse_wet}
     df = evaluate_mix(mix, emissions, costs)
     meta = {"w_b": actual_wb, "cementitious": cementitious, "cement": cementitious, "flyash": 0.0, "ggbs": 0.0, "water_target": water_target, "water_final": water_final, "sp": sp, "fine": fine_wet, "coarse": coarse_wet, "scm_total_frac": 0.0, "grade": grade, "exposure": exposure, "nom_max": nom_max, "slump": target_slump, "co2_total": float(df["CO2_Emissions (kg/m3)"].sum()), "cost_total": float(df["Cost (₹/m3)"].sum()), "coarse_agg_fraction": coarse_agg_frac, "material_props": material_props}
@@ -583,11 +611,11 @@ if 'user_text_input' not in st.session_state:
 if manual_mode:
     st.sidebar.header("📝 Manual Mix Inputs")
     st.sidebar.markdown("---")
-    
+
     st.sidebar.subheader("Core Requirements")
     grade = st.sidebar.selectbox("Concrete Grade", list(GRADE_STRENGTH.keys()), index=4, help="Target characteristic compressive strength at 28 days.")
     exposure = st.sidebar.selectbox("Exposure Condition", list(EXPOSURE_WB_LIMITS.keys()), index=2, help="Determines durability requirements like min. cement content and max. water-binder ratio as per IS 456.")
-    
+
     st.sidebar.subheader("Workability & Materials")
     target_slump = st.sidebar.slider("Target Slump (mm)", 25, 180, 100, 5, help="Specifies the desired consistency and workability of the fresh concrete.")
     # Restricted cement to OPC 43 only.
@@ -611,7 +639,7 @@ if manual_mode:
         materials_file = st.file_uploader("Upload Materials Library CSV", type=["csv"], key="materials_csv", help="CSV with 'Material', 'SpecificGravity', 'MoistureContent', 'WaterAbsorption' columns.")
         sg_fa_default, moisture_fa_default = 2.65, 1.0
         sg_ca_default, moisture_ca_default = 2.70, 0.5
-        
+
         # FIX: Implement parsing for the uploaded materials CSV
         if materials_file is not None:
             try:
@@ -631,25 +659,25 @@ if manual_mode:
                 if not ca_row.empty:
                     if 'specificgravity' in ca_row: sg_ca_default = float(ca_row['specificgravity'].iloc[0])
                     if 'moisturecontent' in ca_row: moisture_ca_default = float(ca_row['moisturecontent'].iloc[0])
-                
+
                 st.success("Materials library CSV loaded and properties updated.")
             except Exception as e:
                 st.error(f"Failed to parse materials CSV: {e}")
-        
+
         st.markdown("###### Fine Aggregate")
         sg_fa = st.number_input("Specific Gravity (FA)", 2.0, 3.0, sg_fa_default, 0.01)
         moisture_fa = st.number_input("Free Moisture Content % (FA)", -2.0, 5.0, moisture_fa_default, 0.1, help="Moisture beyond SSD condition. Negative if absorbent.")
-        
+
         st.markdown("###### Coarse Aggregate")
         sg_ca = st.number_input("Specific Gravity (CA)", 2.0, 3.0, sg_ca_default, 0.01)
         moisture_ca = st.number_input("Free Moisture Content % (CA)", -2.0, 5.0, moisture_ca_default, 0.1, help="Moisture beyond SSD condition. Negative if absorbent.")
-        
+
     st.sidebar.subheader("File Uploads (Optional)")
     with st.sidebar.expander("Upload Sieve Analysis & Financials"):
         st.markdown("###### Sieve Analysis (IS 383)")
         fine_csv = st.file_uploader("Fine Aggregate CSV", type=["csv"], key="fine_csv", help="CSV with 'Sieve_mm' and 'PercentPassing' columns.")
         coarse_csv = st.file_uploader("Coarse Aggregate CSV", type=["csv"], key="coarse_csv", help="CSV with 'Sieve_mm' and 'PercentPassing' columns.")
-        
+
         st.markdown("###### Cost & Emissions Data")
         emissions_file = st.file_uploader("Emission Factors (kgCO₂/kg)", type=["csv"], key="emissions_csv")
         cost_file = st.file_uploader("Cost Factors (₹/kg)", type=["csv"], key="cost_csv")
@@ -694,7 +722,7 @@ with st.sidebar.expander("🎭 Judge Demo Prompts"):
     if st.button(prompt2, use_container_width=True):
         st.session_state.user_text_input = prompt2
         st.rerun()
-    
+
     prompt3 = "good durable mix"
     if st.button(prompt3, use_container_width=True):
         st.session_state.user_text_input = prompt3
@@ -740,21 +768,21 @@ if run_button:
     # Reset state flags on a new run
     st.session_state.run_generation = False
     st.session_state.clarification_needed = False
-    
+
     # Consolidate material properties
     material_props = {'sg_fa': sg_fa, 'moisture_fa': moisture_fa, 'sg_ca': sg_ca, 'moisture_ca': moisture_ca}
 
     # Get initial inputs from sidebar (if manual) or defaults
     inputs = { "grade": grade, "exposure": exposure, "cement_choice": cement_choice, "nom_max": nom_max, "agg_shape": agg_shape, "target_slump": target_slump, "use_sp": use_sp, "optimize_cost": optimize_cost, "qc_level": qc_level, "fine_zone": fine_zone, "material_props": material_props }
-    
+
     # If the user entered text (and not in manual mode), parse it and check for missing info
     if user_text.strip() and not manual_mode:
         with st.spinner("🤖 Parsing your request..."):
             inputs, msgs, _ = apply_parser(user_text, inputs)
-        
+
         if msgs:
             st.info(" ".join(msgs), icon="💡")
-            
+
         # Check for the required fields for mix design
         required_fields = ["grade", "exposure", "target_slump", "nom_max", "cement_choice"]
         missing_fields = [f for f in required_fields if inputs.get(f) is None]
@@ -783,7 +811,7 @@ if st.session_state.get('clarification_needed', False):
         st.subheader("Please Clarify Your Requirements")
         current_inputs = st.session_state.final_inputs
         missing_fields_list = st.session_state.missing_fields
-        
+
         # Dynamically create widgets only for the missing fields
         num_cols = min(len(missing_fields_list), 3) # Max 3 columns for neatness
         cols = st.columns(num_cols)
@@ -808,7 +836,7 @@ if st.session_state.get('run_generation', False):
     st.markdown("---")
     try:
         inputs = st.session_state.final_inputs
-        
+
         # Validate grade against exposure
         min_grade_req = EXPOSURE_MIN_GRADE[inputs["exposure"]]
         grade_order = list(GRADE_STRENGTH.keys())
@@ -834,9 +862,9 @@ if st.session_state.get('run_generation', False):
             fck, S = GRADE_STRENGTH[inputs["grade"]], QC_STDDEV[inputs.get("qc_level", "Good")]
             fck_target = fck + 1.65 * S
             opt_df, opt_meta, trace = generate_mix(
-                inputs["grade"], inputs["exposure"], inputs["nom_max"], 
-                inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"], 
-                emissions_df, costs_df, inputs["cement_choice"], 
+                inputs["grade"], inputs["exposure"], inputs["nom_max"],
+                inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"],
+                emissions_df, costs_df, inputs["cement_choice"],
                 material_props=inputs["material_props"],
                 use_sp=inputs["use_sp"], optimize_cost=inputs["optimize_cost"],
                 **calibration_kwargs
@@ -852,7 +880,15 @@ if st.session_state.get('run_generation', False):
             st.success(f"Successfully generated mix designs for **{inputs['grade']}** concrete in **{inputs['exposure']}** conditions.", icon="✅")
 
             # --- Results Display ---
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 **Overview**", "🌱 **Optimized Mix**", "🏗️ **Baseline Mix**", "📋 **QA/QC & Gradation**", "📥 **Downloads & Reports**", "🔬 **Lab Calibration**"])
+            tab1, tab2, tab3, tab_pareto, tab4, tab5, tab6 = st.tabs([
+                "📊 **Overview**",
+                "🌱 **Optimized Mix**",
+                "🏗️ **Baseline Mix**",
+                "⚖️ **Trade-off Explorer (Pareto Front)**",
+                "📋 **QA/QC & Gradation**",
+                "📥 **Downloads & Reports**",
+                "🔬 **Lab Calibration**"
+            ])
 
             # -- Overview Tab --
             with tab1:
@@ -860,14 +896,14 @@ if st.session_state.get('run_generation', False):
                 co2_base, cost_base = base_meta["co2_total"], base_meta["cost_total"]
                 reduction = (co2_base - co2_opt) / co2_base * 100 if co2_base > 0 else 0.0
                 cost_savings = cost_base - cost_opt
-                
+
                 st.subheader("Performance At a Glance")
                 c1, c2, c3 = st.columns(3)
                 c1.metric("🌱 CO₂ Reduction", f"{reduction:.1f}%", f"{co2_base - co2_opt:.1f} kg/m³ saved")
                 c2.metric("💰 Cost Savings", f"₹{cost_savings:,.0f} / m³", f"{cost_savings/cost_base*100 if cost_base>0 else 0:.1f}% cheaper")
                 c3.metric("♻️ SCM Content", f"{opt_meta['scm_total_frac']*100:.0f}%", f"{base_meta['scm_total_frac']*100:.0f}% in baseline", help="Supplementary Cementitious Materials (Fly Ash, GGBS) replace high-carbon cement.")
                 st.markdown("---")
-                
+
                 col1, col2 = st.columns(2)
                 with col1:
                     st.subheader("📊 Embodied Carbon (CO₂e)")
@@ -885,7 +921,7 @@ if st.session_state.get('run_generation', False):
                     ax2.set_ylabel("Material Cost (₹ / m³)")
                     ax2.bar_label(bars2, fmt='₹{:,.0f}')
                     st.pyplot(fig2)
-                
+
                 # NEW: Judge Explanation Expander
                 with st.expander("📝 Judge Explanation (How CivilGPT Works)"):
                     st.markdown("""
@@ -901,7 +937,7 @@ if st.session_state.get('run_generation', False):
                 c2.metric("📦 Total Binder (kg/m³)", f"{meta['cementitious']:.1f}")
                 c3.metric("🎯 Target Strength (MPa)", f"{meta['fck_target']:.1f}")
                 c4.metric("⚖️ Unit Weight (kg/m³)", f"{df['Quantity (kg/m3)'].sum():.1f}")
-                
+
                 st.subheader("Mix Proportions (per m³)")
                 # UI PATCH: Add explanatory note for CO2 factors.
                 st.info(
@@ -918,16 +954,16 @@ if st.session_state.get('run_generation', False):
 
                 st.subheader("Compliance & Sanity Checks (IS 10262 & IS 456)")
                 is_feasible, fail_reasons, warnings, derived, checks_dict = check_feasibility(df, meta, exposure)
-                
+
                 if is_feasible:
                     st.success("✅ This mix design is compliant with IS code requirements.", icon="👍")
                 else:
                     st.error(f"❌ This mix fails {len(fail_reasons)} IS code compliance check(s): " + ", ".join(fail_reasons), icon="🚨")
-                
+
                 if warnings:
                     for warning in warnings:
                         st.warning(warning, icon="⚠️")
-                
+
                 with st.expander("Show detailed calculation parameters"):
                     st.json(derived)
 
@@ -992,7 +1028,71 @@ if st.session_state.get('run_generation', False):
 
             with tab3:
                 display_mix_details("🏗️ Standard OPC Baseline Mix Design", base_df, base_meta, inputs['exposure'])
-            
+
+            # -- NEW: Trade-off Explorer Tab --
+            with tab_pareto:
+                st.header("Cost vs. Carbon Trade-off Analysis")
+                st.markdown("This chart displays all IS-code compliant mixes found by the optimizer. The blue line represents the **Pareto Front**—the set of most efficient mixes where you can't improve one objective (e.g., lower CO₂) without worsening the other (e.g., increasing cost).")
+
+                if trace:
+                    trace_df = pd.DataFrame(trace)
+                    feasible_mixes = trace_df[trace_df['feasible']].copy()
+
+                    if not feasible_mixes.empty:
+                        pareto_df = pareto_front(feasible_mixes, x_col="cost", y_col="co2")
+
+                        if not pareto_df.empty:
+                            alpha = st.slider(
+                                "Prioritize Sustainability (CO₂) ↔ Cost",
+                                min_value=0.0, max_value=1.0, value=0.5, step=0.05,
+                                help="Slide towards Sustainability to prioritize low CO₂, or towards Cost to prioritize low price. The green diamond will show the best compromise on the Pareto Front for your chosen preference."
+                            )
+
+                            # Normalize scores for the slider
+                            pareto_df_norm = pareto_df.copy()
+                            cost_min, cost_max = pareto_df_norm['cost'].min(), pareto_df_norm['cost'].max()
+                            co2_min, co2_max = pareto_df_norm['co2'].min(), pareto_df_norm['co2'].max()
+
+                            pareto_df_norm['norm_cost'] = 0.0 if (cost_max - cost_min) == 0 else (pareto_df_norm['cost'] - cost_min) / (cost_max - cost_min)
+                            pareto_df_norm['norm_co2'] = 0.0 if (co2_max - co2_min) == 0 else (pareto_df_norm['co2'] - co2_min) / (co2_max - co2_min)
+                            pareto_df_norm['score'] = alpha * pareto_df_norm['norm_co2'] + (1 - alpha) * pareto_df_norm['norm_cost']
+
+                            best_compromise_mix = pareto_df_norm.loc[pareto_df_norm['score'].idxmin()]
+
+                            # Plotting
+                            fig, ax = plt.subplots(figsize=(10, 6))
+
+                            # All feasible candidate mixes
+                            ax.scatter(feasible_mixes["cost"], feasible_mixes["co2"], color='grey', alpha=0.5, label='All Feasible Mixes')
+                            # Pareto front mixes
+                            ax.plot(pareto_df["cost"], pareto_df["co2"], '-o', color='blue', label='Pareto Front (Efficient Mixes)')
+                            # Primary optimized mix (the one with lowest CO2 or Cost)
+                            ax.plot(opt_meta['cost_total'], opt_meta['co2_total'], '*', markersize=15, color='red', label=f'Chosen Mix (Lowest {optimize_for.split(" ")[1]})')
+                            # Best compromise mix from slider
+                            ax.plot(best_compromise_mix['cost'], best_compromise_mix['co2'], 'D', markersize=10, color='green', label='Best Compromise (from slider)')
+
+                            ax.set_xlabel("Material Cost (₹/m³)")
+                            ax.set_ylabel("Embodied Carbon (kg CO₂e / m³)")
+                            ax.set_title("Pareto Front of Feasible Concrete Mixes")
+                            ax.grid(True, linestyle='--', alpha=0.6)
+                            ax.legend()
+                            st.pyplot(fig)
+
+                            st.markdown("---")
+                            st.subheader("Details of Selected 'Best Compromise' Mix")
+                            c1, c2, c3 = st.columns(3)
+                            c1.metric("💰 Cost", f"₹{best_compromise_mix['cost']:.0f} / m³")
+                            c2.metric("🌱 CO₂", f"{best_compromise_mix['co2']:.1f} kg / m³")
+                            c3.metric("💧 Water/Binder Ratio", f"{best_compromise_mix['wb']:.3f}")
+
+                        else:
+                            st.info("No Pareto front could be determined from the feasible mixes.", icon="ℹ️")
+                    else:
+                        st.warning("No feasible mixes were found by the optimizer, so no trade-off plot can be generated.", icon="⚠️")
+                else:
+                    st.error("Optimizer trace data is missing.", icon="❌")
+
+
             # -- QA/QC & Gradation Tab --
             with tab4:
                 st.header("Quality Assurance & Sieve Analysis")
@@ -1008,7 +1108,7 @@ if st.session_state.get('run_generation', False):
                         df_fine = pd.read_csv(fine_csv)
                         ok_fa, msgs_fa = sieve_check_fa(df_fine, inputs.get("fine_zone", "Zone II"))
                         if ok_fa: st.success(msgs_fa[0], icon="✅")
-                        else: 
+                        else:
                             for m in msgs_fa: st.error(m, icon="❌")
                         st.dataframe(df_fine, use_container_width=True)
                     else:
@@ -1036,7 +1136,7 @@ if st.session_state.get('run_generation', False):
                             file_name="sample_coarse_aggregate.csv",
                             mime="text/csv",
                         )
-                
+
                 st.markdown("---")
                 # NEW: Added calculation walkthrough expander
                 with st.expander("📖 View Step-by-Step Calculation Walkthrough"):
@@ -1057,11 +1157,11 @@ if st.session_state.get('run_generation', False):
                         st.pyplot(fig)
                     else:
                         st.info("Trace not available.")
-            
+
             # -- Downloads Tab --
             with tab5:
                 st.header("Download Reports")
-                
+
                 # Excel Report
                 excel_buffer = BytesIO()
                 with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
@@ -1069,13 +1169,13 @@ if st.session_state.get('run_generation', False):
                     base_df.to_excel(writer, sheet_name="Baseline_Mix", index=False)
                     pd.DataFrame([opt_meta]).T.to_excel(writer, sheet_name="Optimized_Meta")
                     pd.DataFrame([base_meta]).T.to_excel(writer, sheet_name="Baseline_Meta")
-                
+
                 # PDF Report
                 pdf_buffer = BytesIO()
                 doc = SimpleDocTemplate(pdf_buffer, pagesize=(8.5*inch, 11*inch))
                 styles = getSampleStyleSheet()
                 story = [Paragraph("CivilGPT Sustainable Mix Report", styles['h1']), Spacer(1, 0.2*inch)]
-                
+
                 # Summary table
                 summary_data = [
                     ["Metric", "Optimized Mix", "Baseline Mix"],
@@ -1087,7 +1187,7 @@ if st.session_state.get('run_generation', False):
                 summary_table = Table(summary_data, hAlign='LEFT', colWidths=[2*inch, 1.5*inch, 1.5*inch])
                 summary_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 1, colors.black), ('BACKGROUND', (0,0), (-1,0), colors.lightgrey)]))
                 story.extend([Paragraph(f"Design for <b>{inputs['grade']} / {inputs['exposure']} Exposure</b>", styles['h2']), summary_table, Spacer(1, 0.2*inch)])
-                
+
                 # Optimized Mix Table
                 opt_data_pdf = [opt_df.columns.values.tolist()] + opt_df.values.tolist()
                 opt_table = Table(opt_data_pdf, hAlign='LEFT')
@@ -1102,7 +1202,7 @@ if st.session_state.get('run_generation', False):
                 with d2:
                     st.download_button("✔️ Optimized Mix (CSV)", data=opt_df.to_csv(index=False).encode("utf-8"), file_name="optimized_mix.csv", mime="text/csv", use_container_width=True)
                     st.download_button("✖️ Baseline Mix (CSV)", data=base_df.to_csv(index=False).encode("utf-8"), file_name="baseline_mix.csv", mime="text/csv", use_container_width=True)
-            
+
             # -- NEW: Lab Calibration Tab --
             with tab6:
                 st.header("🔬 Lab Calibration Analysis")
