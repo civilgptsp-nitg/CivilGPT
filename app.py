@@ -1,4 +1,4 @@
-e# app.py — CivilGPT v2.1 (Refactored UI & IS-Code Compliant Logic)
+# app.py - CivilGPT v2.1 (Refactored UI & IS-Code Compliant Logic)
 # Backend logic preserved from v2.0
 # UI refactored for a professional, modern, and intuitive experience
 # Clarification step for free-text parsing added.
@@ -154,7 +154,7 @@ def load_data(materials_file=None, emissions_file=None, cost_file=None):
         except:
             emissions = pd.DataFrame(columns=["Material", "CO2_Factor(kg_CO2_per_kg)"])
 
-    # 🔧 FIXED COST LOADING
+    # FIXED COST LOADING
     if costs is None or costs.empty:
         found = False
         for p in ["cost_factors.csv", "data/cost_factors.csv"]:
@@ -977,5 +977,3 @@ elif not st.session_state.get('clarification_needed'):
     3.  **Sustainability Optimization**: It then calculates the embodied carbon (CO₂e) and cost for every compliant mix.
     4.  **Best Mix Selection**: Finally, it presents the mix with the lowest carbon footprint (or cost) alongside a standard OPC baseline for comparison.
     """)
-
-
