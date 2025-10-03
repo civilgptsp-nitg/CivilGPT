@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-from io import BytesIO
+from io import BytesIO, StringIO
 import json
 import traceback
 import re
@@ -275,7 +275,7 @@ def evaluate_mix(components_dict, emissions_df, costs_df=None):
     emissions_df = emissions_df.copy()
     emissions_df["Material_norm"] = emissions_df["Material"].str.strip().str.lower()
     df = comp_df.merge(emissions_df[["Material_norm","CO2_Factor(kg_CO2_per_kg)"]],
-                         on="Material_norm", how="left")
+                           on="Material_norm", how="left")
     if "CO2_Factor(kg_CO2_per_kg)" not in df.columns:
         df["CO2_Factor(kg_CO2_per_kg)"] = 0.0
     df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
@@ -609,10 +609,33 @@ if manual_mode:
     # NEW: Material Properties Expander
     with st.sidebar.expander("Material Properties (from Library or Manual)"):
         materials_file = st.file_uploader("Upload Materials Library CSV", type=["csv"], key="materials_csv", help="CSV with 'Material', 'SpecificGravity', 'MoistureContent', 'WaterAbsorption' columns.")
-        sg_fa_default, moisture_fa_default, absorption_fa_default = 2.65, 1.0, 1.5
-        sg_ca_default, moisture_ca_default, absorption_ca_default = 2.70, 0.5, 1.0
-        # Placeholder for future logic to parse uploaded CSV and override defaults
-        # For now, these are direct inputs.
+        sg_fa_default, moisture_fa_default = 2.65, 1.0
+        sg_ca_default, moisture_ca_default = 2.70, 0.5
+        
+        # FIX: Implement parsing for the uploaded materials CSV
+        if materials_file is not None:
+            try:
+                mat_df = pd.read_csv(materials_file)
+                # Normalize column names for robustness
+                mat_df.columns = [col.strip().lower().replace(" ", "") for col in mat_df.columns]
+                mat_df['material'] = mat_df['material'].str.strip().lower()
+
+                # Find Fine Aggregate properties
+                fa_row = mat_df[mat_df['material'] == 'fine aggregate']
+                if not fa_row.empty:
+                    if 'specificgravity' in fa_row: sg_fa_default = float(fa_row['specificgravity'].iloc[0])
+                    if 'moisturecontent' in fa_row: moisture_fa_default = float(fa_row['moisturecontent'].iloc[0])
+
+                # Find Coarse Aggregate properties
+                ca_row = mat_df[mat_df['material'] == 'coarse aggregate']
+                if not ca_row.empty:
+                    if 'specificgravity' in ca_row: sg_ca_default = float(ca_row['specificgravity'].iloc[0])
+                    if 'moisturecontent' in ca_row: moisture_ca_default = float(ca_row['moisturecontent'].iloc[0])
+                
+                st.success("Materials library CSV loaded and properties updated.")
+            except Exception as e:
+                st.error(f"Failed to parse materials CSV: {e}")
+        
         st.markdown("###### Fine Aggregate")
         sg_fa = st.number_input("Specific Gravity (FA)", 2.0, 3.0, sg_fa_default, 0.01)
         moisture_fa = st.number_input("Free Moisture Content % (FA)", -2.0, 5.0, moisture_fa_default, 0.1, help="Moisture beyond SSD condition. Negative if absorbent.")
@@ -657,7 +680,7 @@ else: # Default values when manual mode is off
     sg_fa, moisture_fa = 2.65, 1.0
     sg_ca, moisture_ca = 2.70, 0.5
     fine_csv, coarse_csv, lab_csv = None, None, None
-    emissions_file, cost_file = None, None
+    emissions_file, cost_file, materials_file = None, None, None # Ensure materials_file is None
     use_llm_parser = False
 
 # NEW: Judge Demo Prompts
@@ -754,6 +777,8 @@ if run_button:
 if st.session_state.get('clarification_needed', False):
     st.markdown("---")
     st.warning("Your request is missing some details. Please confirm the following to continue.", icon="🤔")
+    # FIX: Add requested sentence above the form.
+    st.markdown("Please confirm the missing values below. Once submitted, mix design will start automatically.")
     with st.form("clarification_form"):
         st.subheader("Please Clarify Your Requirements")
         current_inputs = st.session_state.final_inputs
@@ -774,7 +799,7 @@ if st.session_state.get('clarification_needed', False):
         if submitted:
             # When form is submitted, update state and rerun to start generation
             st.session_state.final_inputs = current_inputs
-            st.session_state.clarification_needed = False
+            st.session_state.clarification_needed = False # This hides the form
             st.session_state.run_generation = True
             st.rerun()
 
@@ -961,12 +986,21 @@ if st.session_state.get('run_generation', False):
             # -- Optimized & Baseline Mix Tabs --
             with tab2:
                 display_mix_details("🌱 Optimized Low-Carbon Mix Design", opt_df, opt_meta, inputs['exposure'])
+                # FIX: Add toggle for step-by-step walkthrough under the Optimized Mix tab
+                if st.toggle("📖 Show Step-by-Step IS Calculation", key="toggle_walkthrough_tab2"):
+                    display_calculation_walkthrough(opt_meta)
+
             with tab3:
                 display_mix_details("🏗️ Standard OPC Baseline Mix Design", base_df, base_meta, inputs['exposure'])
             
             # -- QA/QC & Gradation Tab --
             with tab4:
                 st.header("Quality Assurance & Sieve Analysis")
+
+                # FIX: Add sample file downloads
+                sample_fa_data = "Sieve_mm,PercentPassing\n4.75,95\n2.36,80\n1.18,60\n0.600,40\n0.300,15\n0.150,5"
+                sample_ca_data = "Sieve_mm,PercentPassing\n40.0,100\n20.0,98\n10.0,40\n4.75,5"
+
                 col1, col2 = st.columns(2)
                 with col1:
                     st.subheader("Fine Aggregate Gradation")
@@ -979,6 +1013,12 @@ if st.session_state.get('run_generation', False):
                         st.dataframe(df_fine, use_container_width=True)
                     else:
                         st.info("Upload a Fine Aggregate CSV in the sidebar to perform a gradation check against IS 383.", icon="ℹ️")
+                        st.download_button(
+                            label="Download Sample Fine Agg. CSV",
+                            data=sample_fa_data,
+                            file_name="sample_fine_aggregate.csv",
+                            mime="text/csv",
+                        )
                 with col2:
                     st.subheader("Coarse Aggregate Gradation")
                     if coarse_csv is not None:
@@ -990,6 +1030,12 @@ if st.session_state.get('run_generation', False):
                         st.dataframe(df_coarse, use_container_width=True)
                     else:
                         st.info("Upload a Coarse Aggregate CSV in the sidebar to perform a gradation check against IS 383.", icon="ℹ️")
+                        st.download_button(
+                            label="Download Sample Coarse Agg. CSV",
+                            data=sample_ca_data,
+                            file_name="sample_coarse_aggregate.csv",
+                            mime="text/csv",
+                        )
                 
                 st.markdown("---")
                 # NEW: Added calculation walkthrough expander
