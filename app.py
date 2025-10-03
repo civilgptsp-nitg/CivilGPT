@@ -246,15 +246,28 @@ def evaluate_mix(components_dict, emissions_df, costs_df=None):
         df["CO2_Factor(kg_CO2_per_kg)"] = 0.0
     df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
     df["CO2_Emissions (kg/m3)"] = df["Quantity (kg/m3)"] * df["CO2_Factor(kg_CO2_per_kg)"]
-    if costs_df is not None and "Cost(₹/kg)" in costs_df.columns:
+
+    # --- COST CALCULATION FIX ---
+    # Check if cost data is available, valid, and not empty
+    if costs_df is not None and "Cost(₹/kg)" in costs_df.columns and not costs_df.empty:
         costs_df = costs_df.copy()
+        # Normalize material names in the cost dataframe for robust merging
         costs_df["Material_norm"] = costs_df["Material"].str.strip().str.lower()
-        df = df.merge(costs_df[["Material_norm","Cost(₹/kg)"]], on="Material_norm", how="left")
+        # Perform a left merge to add cost data to the mix components
+        df = df.merge(costs_df[["Material_norm", "Cost(₹/kg)"]], on="Material_norm", how="left")
+        # If a material from the mix is not in the cost file, its cost will be NaN.
+        # Fill these missing values with 0.0 as a fallback.
         df["Cost(₹/kg)"] = df["Cost(₹/kg)"].fillna(0.0)
+        # Calculate the total cost per cubic meter for each component
         df["Cost (₹/m3)"] = df["Quantity (kg/m3)"] * df["Cost(₹/kg)"]
     else:
+        # If no cost data is provided or it's invalid, create the columns with zero values.
+        # This ensures the app functions correctly and the output format is consistent.
+        df["Cost(₹/kg)"] = 0.0
         df["Cost (₹/m3)"] = 0.0
+    
     df["Material"] = df["Material_norm"].str.title()
+    # Ensure the final returned DataFrame has all the required columns in the correct order.
     return df[["Material","Quantity (kg/m3)","CO2_Factor(kg_CO2_per_kg)","CO2_Emissions (kg/m3)","Cost(₹/kg)","Cost (₹/m3)"]]
 
 def aggregate_correction(delta_moisture_pct: float, agg_mass_ssd: float):
