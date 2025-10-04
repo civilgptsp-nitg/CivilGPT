@@ -303,7 +303,7 @@ def evaluate_mix(components_dict, emissions_df, costs_df=None):
     emissions_df = emissions_df.copy()
     emissions_df["Material_norm"] = emissions_df["Material"].str.strip().str.lower()
     df = comp_df.merge(emissions_df[["Material_norm","CO2_Factor(kg_CO2_per_kg)"]],
-                            on="Material_norm", how="left")
+                               on="Material_norm", how="left")
     if "CO2_Factor(kg_CO2_per_kg)" not in df.columns:
         df["CO2_Factor(kg_CO2_per_kg)"] = 0.0
     df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
@@ -869,7 +869,16 @@ if st.session_state.get('run_generation', False):
                 use_sp=inputs["use_sp"], optimize_cost=inputs["optimize_cost"],
                 **calibration_kwargs
             )
-            base_df, base_meta = generate_baseline(inputs["grade"], inputs["exposure"], inputs["nom_max"], inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"], emissions_df, costs_df, inputs["cement_choice"], material_props=inputs["material_props"], use_sp=inputs["use_sp"])
+            # BUG FIX: The 'material_props' argument was being passed the entire 'inputs' dictionary
+            # by mistake, instead of the nested 'inputs["material_props"]' dictionary. This caused a KeyError.
+            # The line below has been corrected to pass the correct dictionary.
+            base_df, base_meta = generate_baseline(
+                inputs["grade"], inputs["exposure"], inputs["nom_max"],
+                inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"],
+                emissions_df, costs_df, inputs["cement_choice"],
+                material_props=inputs["material_props"],
+                use_sp=inputs["use_sp"]
+            )
 
         if opt_df is None or base_df is None:
             st.error("Could not find a feasible mix design with the given constraints. Try adjusting the parameters, such as a higher grade or less restrictive exposure condition.", icon="❌")
