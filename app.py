@@ -869,9 +869,6 @@ if st.session_state.get('run_generation', False):
                 use_sp=inputs["use_sp"], optimize_cost=inputs["optimize_cost"],
                 **calibration_kwargs
             )
-            # BUG FIX: The 'material_props' argument was being passed the entire 'inputs' dictionary
-            # by mistake, instead of the nested 'inputs["material_props"]' dictionary. This caused a KeyError.
-            # The line below has been corrected to pass the correct dictionary.
             base_df, base_meta = generate_baseline(
                 inputs["grade"], inputs["exposure"], inputs["nom_max"],
                 inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"],
@@ -1076,6 +1073,9 @@ if st.session_state.get('run_generation', False):
                             # Pareto front mixes
                             ax.plot(pareto_df["cost"], pareto_df["co2"], '-o', color='blue', label='Pareto Front (Efficient Mixes)')
                             # Primary optimized mix (the one with lowest CO2 or Cost)
+                            # BUG FIX: The 'optimize_for' variable is only defined in manual mode.
+                            # This recreates it based on the 'optimize_cost' boolean from the final inputs.
+                            optimize_for = "Lowest Cost" if inputs['optimize_cost'] else "Lowest CO₂"
                             ax.plot(opt_meta['cost_total'], opt_meta['co2_total'], '*', markersize=15, color='red', label=f'Chosen Mix (Lowest {optimize_for.split(" ")[1]})')
                             # Best compromise mix from slider
                             ax.plot(best_compromise_mix['cost'], best_compromise_mix['co2'], 'D', markersize=10, color='green', label='Best Compromise (from slider)')
