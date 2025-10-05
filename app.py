@@ -6,7 +6,7 @@
 # v2.3 - Added developer calibration panel to tune optimizer search parameters.
 # v2.4 - Added Lab Calibration Dataset Upload + Error Analysis feature.
 # v2.5 - Integrated Material Library, Binder Range Checks, Judge Prompts, and Calculation Walkthrough.
-# v2.7 (internal) - Added 28-day strength estimation from 7-day data.
+# v2.8 (internal) - Added robust data reshaping for lab calibration from raw experimental data.
 
 import streamlit as st
 import pandas as pd
@@ -56,40 +56,63 @@ def safe_load_excel(name):
                     return None
     return None
 
-lab_df = safe_load_excel(LAB_FILE)
+lab_df_raw = safe_load_excel(LAB_FILE)
 mix_df = safe_load_excel(MIX_FILE)
 
-# Normalize column names after loading to prevent KeyErrors
-if lab_df is not None:
-    lab_df.columns = [str(col).strip().lower().replace(' ', '_').replace('-', '_') for col in lab_df.columns]
+# --- START: Data Pre-processing and Reshaping for Lab Calibration ---
+# This block standardizes column names and reshapes the raw lab data to be usable.
+# It handles various naming conventions and pivots the data from a long to a wide format.
+lab_df = None
+if lab_df_raw is not None:
+    lab_df = lab_df_raw.copy()
+    # Normalize all column names first
+    lab_df.columns = [str(col).strip().lower().replace(' ', '_').replace('-', '_').replace('(n/mm^2)','') for col in lab_df.columns]
+    
+    # Standardize common column name variations to a consistent format
+    rename_map = {
+        'grade_of_concrete': 'grade',
+        'compressive_strength': 'strength',
+        'average_compressive_strength': 'strength',
+        'age_days': 'age'
+    }
+    lab_df.rename(columns=rename_map, inplace=True)
+
+    # If data is in long format (age, strength), pivot it to wide format
+    if 'age' in lab_df.columns and 'strength' in lab_df.columns and 'grade' in lab_df.columns:
+        try:
+            # Convert age to numeric, coercing errors
+            lab_df['age'] = pd.to_numeric(lab_df['age'], errors='coerce')
+            lab_df['strength'] = pd.to_numeric(lab_df['strength'], errors='coerce')
+            lab_df.dropna(subset=['age', 'strength', 'grade'], inplace=True)
+            
+            # Pivot the table to create columns for each age
+            pivot_df = lab_df.pivot_table(index='grade', columns='age', values='strength', aggfunc='mean').reset_index()
+            
+            # Rename pivoted columns (e.g., 7.0 -> 7_day_strength)
+            pivot_df.columns = [f"{int(col)}_day_strength" if isinstance(col, (int, float)) else str(col) for col in pivot_df.columns]
+            
+            lab_df = pivot_df.copy()
+
+        except Exception as e:
+            st.warning(f"Could not automatically reshape lab data. Error: {e}")
+            # If pivot fails, fall back to the normalized but unpivoted data
+            lab_df = lab_df
 
 if mix_df is not None:
     mix_df.columns = [str(col).strip().lower().replace(' ', '_').replace('-', '_') for col in mix_df.columns]
 
-    # --- START: Estimate 28-day strength from 7-day strength where missing ---
-    # This logic applies a common estimation formula to fill in missing 28-day strength data
-    # using available 7-day data, applying a different factor for mixes with SCMs (GGBS/Fly Ash).
+    # --- Estimate 28-day strength from 7-day strength where missing ---
     if '7_day_strength' in mix_df.columns and '28_day_strength' in mix_df.columns:
-        # Ensure strength columns are numeric, converting errors to missing values (NaN)
         mix_df['7_day_strength'] = pd.to_numeric(mix_df['7_day_strength'], errors='coerce')
         mix_df['28_day_strength'] = pd.to_numeric(mix_df['28_day_strength'], errors='coerce')
-
-        # To handle datasets without composition, default SCM columns to 0 if they don't exist.
         if 'ggbs' not in mix_df.columns: mix_df['ggbs'] = 0
         if 'fly_ash' not in mix_df.columns: mix_df['fly_ash'] = 0
         mix_df['ggbs'] = pd.to_numeric(mix_df['ggbs'], errors='coerce').fillna(0)
         mix_df['fly_ash'] = pd.to_numeric(mix_df['fly_ash'], errors='coerce').fillna(0)
-
-
-        # Determine the multiplication factor: 1.6 for SCM mixes, 1.5 for plain OPC (vectorized)
         factor = np.where((mix_df['ggbs'] > 0) | (mix_df['fly_ash'] > 0), 1.6, 1.5)
-
-        # Identify rows where 28-day strength is missing but 7-day strength is available
         mask_to_fill = mix_df['28_day_strength'].isnull() & mix_df['7_day_strength'].notnull()
-
-        # Apply the vectorized calculation to fill only the missing values
         mix_df.loc[mask_to_fill, '28_day_strength'] = mix_df.loc[mask_to_fill, '7_day_strength'] * factor
-    # --- END: Strength Estimation ---
+# --- END: Data Pre-processing ---
 
 
 # --- IS Code Rules & Tables (IS 456 & IS 10262) ---
@@ -345,21 +368,18 @@ def display_calibration_comparison_tab():
         return
 
     try:
-        # 1. Prepare Lab Data: Group by grade and calculate mean strengths
-        # Ensure strength columns are numeric, coercing errors to NaN and then dropping them
-        temp_lab_df = lab_df.copy()
-        
-        # Check if required columns exist after normalization
+        # 1. Prepare Lab Data: Check for required columns after reshaping
         required_cols = ['grade', '7_day_strength', '28_day_strength']
-        if not all(col in temp_lab_df.columns for col in required_cols):
-            st.error(f"The lab data file is missing one or more required columns. Please ensure it contains: {', '.join(required_cols)}.", icon="❌")
-            st.write("Available columns:", temp_lab_df.columns.tolist())
+        if not all(col in lab_df.columns for col in required_cols):
+            st.error(f"The lab data file is missing one or more required columns after processing. Please ensure it contains data that can be pivoted into: {', '.join(required_cols)}.", icon="❌")
+            st.write("Available columns after processing:", lab_df.columns.tolist())
             return
             
+        temp_lab_df = lab_df.copy()
         temp_lab_df['7_day_strength'] = pd.to_numeric(temp_lab_df['7_day_strength'], errors='coerce')
         temp_lab_df['28_day_strength'] = pd.to_numeric(temp_lab_df['28_day_strength'], errors='coerce')
         
-        lab_summary = temp_lab_df.dropna(subset=['7_day_strength', '28_day_strength']).groupby('grade').agg(
+        lab_summary = temp_lab_df.dropna(subset=['grade', '7_day_strength', '28_day_strength']).groupby('grade').agg(
             Lab_7_Day_Avg=('7_day_strength', 'mean'),
             Lab_28_Day_Avg=('28_day_strength', 'mean')
         ).reset_index()
