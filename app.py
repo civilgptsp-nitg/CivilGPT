@@ -6,7 +6,7 @@
 # v2.3 - Added developer calibration panel to tune optimizer search parameters.
 # v2.4 - Added Lab Calibration Dataset Upload + Error Analysis feature.
 # v2.5 - Integrated Material Library, Binder Range Checks, Judge Prompts, and Calculation Walkthrough.
-# v2.6 (internal) - Added Calibration Comparison tab for model validation.
+# v2.6 (internal) - Added Calibration Comparison tab and fixed KeyError on data load.
 
 import streamlit as st
 import pandas as pd
@@ -58,6 +58,14 @@ def safe_load_excel(name):
 
 lab_df = safe_load_excel(LAB_FILE)
 mix_df = safe_load_excel(MIX_FILE)
+
+# --- FIX: Normalize column names after loading to prevent KeyErrors ---
+if lab_df is not None:
+    lab_df.columns = [str(col).strip().lower().replace(' ', '_').replace('-', '_') for col in lab_df.columns]
+
+if mix_df is not None:
+    mix_df.columns = [str(col).strip().lower().replace(' ', '_').replace('-', '_') for col in mix_df.columns]
+# --- END FIX ---
 
 
 # --- IS Code Rules & Tables (IS 456 & IS 10262) ---
@@ -316,8 +324,17 @@ def display_calibration_comparison_tab():
         # 1. Prepare Lab Data: Group by grade and calculate mean strengths
         # Ensure strength columns are numeric, coercing errors to NaN and then dropping them
         temp_lab_df = lab_df.copy()
+        
+        # Check if required columns exist after normalization
+        required_cols = ['grade', '7_day_strength', '28_day_strength']
+        if not all(col in temp_lab_df.columns for col in required_cols):
+            st.error(f"The lab data file is missing one or more required columns. Please ensure it contains: {', '.join(required_cols)}.", icon="❌")
+            st.write("Available columns:", temp_lab_df.columns.tolist())
+            return
+            
         temp_lab_df['7_day_strength'] = pd.to_numeric(temp_lab_df['7_day_strength'], errors='coerce')
         temp_lab_df['28_day_strength'] = pd.to_numeric(temp_lab_df['28_day_strength'], errors='coerce')
+        
         lab_summary = temp_lab_df.dropna(subset=['7_day_strength', '28_day_strength']).groupby('grade').agg(
             Lab_7_Day_Avg=('7_day_strength', 'mean'),
             Lab_28_Day_Avg=('28_day_strength', 'mean')
@@ -325,7 +342,7 @@ def display_calibration_comparison_tab():
 
         # 2. Calculate IS Target Strength for each grade
         def get_fck_target(grade):
-            fck = GRADE_STRENGTH.get(str(grade).strip())
+            fck = GRADE_STRENGTH.get(str(grade).strip().upper()) # Use .upper() for robustness
             if fck:
                 return fck + 1.65 * QC_STDDEV["Good"]
             return None
