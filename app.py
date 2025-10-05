@@ -6,7 +6,6 @@
 # v2.3 - Added developer calibration panel to tune optimizer search parameters.
 # v2.4 - Added Lab Calibration Dataset Upload + Error Analysis feature.
 # v2.5 - Integrated Material Library, Binder Range Checks, Judge Prompts, and Calculation Walkthrough.
-# v2.8 (internal) - Added robust data reshaping for lab calibration from raw experimental data.
 
 import streamlit as st
 import pandas as pd
@@ -56,93 +55,8 @@ def safe_load_excel(name):
                     return None
     return None
 
-lab_df_raw = safe_load_excel(LAB_FILE)
+lab_df = safe_load_excel(LAB_FILE)
 mix_df = safe_load_excel(MIX_FILE)
-
-# --- START: Data Pre-processing and Reshaping for Lab Calibration ---
-# This block standardizes column names and reshapes the raw lab data to be usable.
-# It handles various naming conventions and pivots the data from a long to a wide format.
-lab_df = None
-if lab_df_raw is not None:
-    lab_df = lab_df_raw.copy()
-    # Normalize all column names first
-    lab_df.columns = [str(col).strip().lower().replace(' ', '_').replace('-', '_').replace('(n/mm^2)','') for col in lab_df.columns]
-
-    # Standardize common column name variations to a consistent format
-    rename_map = {
-        'grade_of_concrete': 'grade',
-        'compressive_strength': 'strength',
-        'average_compressive_strength': 'strength',
-        'age_days': 'age'
-    }
-    lab_df.rename(columns=rename_map, inplace=True)
-
-    # If data is in long format (age, strength), pivot it to wide format
-    if 'age' in lab_df.columns and 'strength' in lab_df.columns and 'grade' in lab_df.columns:
-        try:
-            # Prepare data for pivoting
-            lab_df['age'] = pd.to_numeric(lab_df['age'], errors='coerce')
-            lab_df['strength'] = pd.to_numeric(lab_df['strength'], errors='coerce')
-            lab_df.dropna(subset=['age', 'strength', 'grade'], inplace=True)
-
-            # Filter for only the ages we need
-            lab_df_filtered = lab_df[lab_df['age'].isin([7, 28])]
-
-            # Pivot the table to create columns for 7 and 28 days, averaging if multiple entries exist
-            pivot_df = lab_df_filtered.pivot_table(
-                index='grade',
-                columns='age',
-                values='strength',
-                aggfunc='mean'
-            ).reset_index()
-
-            # Rename the pivoted columns from numbers (7.0, 28.0) to the required names
-            pivot_df.rename(columns={7: '7_day_strength', 28: '28_day_strength'}, inplace=True)
-
-            # --- Fill missing 28-day strength based on 7-day strength ---
-            # Ensure both columns exist for the operation, creating 28-day if it's completely missing
-            if '7_day_strength' in pivot_df.columns and '28_day_strength' not in pivot_df.columns:
-                pivot_df['28_day_strength'] = np.nan
-
-            if '7_day_strength' in pivot_df.columns and '28_day_strength' in pivot_df.columns:
-                # Determine the multiplication factor. Using 1.5 as SCM information is not
-                # reliably available in the raw lab data file after aggregation.
-                # The prompt's request for a 1.6 factor is conditional on this data being present.
-                factor = 1.5
-
-                # Identify rows where 28-day strength is missing but 7-day is available
-                mask_to_fill = pivot_df['28_day_strength'].isnull() & pivot_df['7_day_strength'].notnull()
-
-                # Apply the estimation formula
-                pivot_df.loc[mask_to_fill, '28_day_strength'] = pivot_df.loc[mask_to_fill, '7_day_strength'] * factor
-
-            lab_df = pivot_df.copy()
-
-            # For debugging purposes as requested, display the final columns
-            print(f"DEBUG: Processed lab data columns: {lab_df.columns.tolist()}")
-
-        except Exception as e:
-            st.warning(f"Could not automatically reshape lab data. Error: {e}")
-            # If pivot fails, fall back to the normalized but unpivoted data
-            # lab_df is already the normalized copy, so this is a safe fallback
-# --- END: Data Pre-processing and Reshaping for Lab Calibration ---
-
-
-if mix_df is not None:
-    mix_df.columns = [str(col).strip().lower().replace(' ', '_').replace('-', '_') for col in mix_df.columns]
-
-    # --- Estimate 28-day strength from 7-day strength where missing ---
-    if '7_day_strength' in mix_df.columns and '28_day_strength' in mix_df.columns:
-        mix_df['7_day_strength'] = pd.to_numeric(mix_df['7_day_strength'], errors='coerce')
-        mix_df['28_day_strength'] = pd.to_numeric(mix_df['28_day_strength'], errors='coerce')
-        if 'ggbs' not in mix_df.columns: mix_df['ggbs'] = 0
-        if 'fly_ash' not in mix_df.columns: mix_df['fly_ash'] = 0
-        mix_df['ggbs'] = pd.to_numeric(mix_df['ggbs'], errors='coerce').fillna(0)
-        mix_df['fly_ash'] = pd.to_numeric(mix_df['fly_ash'], errors='coerce').fillna(0)
-        factor = np.where((mix_df['ggbs'] > 0) | (mix_df['fly_ash'] > 0), 1.6, 1.5)
-        mask_to_fill = mix_df['28_day_strength'].isnull() & mix_df['7_day_strength'].notnull()
-        mix_df.loc[mask_to_fill, '28_day_strength'] = mix_df.loc[mask_to_fill, '7_day_strength'] * factor
-# --- END: Data Pre-processing ---
 
 
 # --- IS Code Rules & Tables (IS 456 & IS 10262) ---
@@ -379,113 +293,6 @@ def run_lab_calibration(lab_df):
 
     return results_df, metrics
 
-# NEW: Function for the Calibration Comparison Tab
-def display_calibration_comparison_tab():
-    """
-    Displays the Calibration Comparison tab.
-    Compares CivilGPT's IS-based target strengths against real lab data from the repo.
-    """
-    st.header("📐 Calibration Comparison")
-    st.markdown("""
-    This tab provides a validation of CivilGPT's theoretical target strength calculations against a real-world dataset loaded from the repository.
-    - **CivilGPT's Target Strength (`f'ck`)**: Calculated as `fck + 1.65 * S` based on IS 10262, assuming 'Good' quality control (S=5.0 MPa). This is the strength a mix should be designed for to reliably achieve the characteristic strength (`fck`).
-    - **Lab Strengths**: Average 7-day and 28-day compressive strengths from `data/lab_processed_mgrades_only.xlsx`.
-    - **Error Metrics**: Quantify the difference between the theoretical target strength and the actual achieved 28-day lab strength.
-    """)
-
-    if lab_df is None or lab_df.empty:
-        st.warning("Could not load the required lab dataset (`data/lab_processed_mgrades_only.xlsx`). Comparison cannot be performed.", icon="⚠️")
-        return
-
-    try:
-        # 1. Prepare Lab Data: Check for required columns after reshaping
-        required_cols = ['grade', '7_day_strength', '28_day_strength']
-        if not all(col in lab_df.columns for col in required_cols):
-            st.error(f"The lab data file is missing one or more required columns after processing.  \nPlease ensure it contains: {', '.join(required_cols)}.", icon="❌")
-            st.write("Available columns after processing:", lab_df.columns.tolist())
-            return
-            
-        temp_lab_df = lab_df.copy()
-        temp_lab_df['7_day_strength'] = pd.to_numeric(temp_lab_df['7_day_strength'], errors='coerce')
-        temp_lab_df['28_day_strength'] = pd.to_numeric(temp_lab_df['28_day_strength'], errors='coerce')
-        
-        lab_summary = temp_lab_df.dropna(subset=['grade', '7_day_strength', '28_day_strength']).groupby('grade').agg(
-            Lab_7_Day_Avg=('7_day_strength', 'mean'),
-            Lab_28_Day_Avg=('28_day_strength', 'mean')
-        ).reset_index()
-
-        # 2. Calculate IS Target Strength for each grade
-        def get_fck_target(grade):
-            fck = GRADE_STRENGTH.get(str(grade).strip().upper()) # Use .upper() for robustness
-            if fck:
-                return fck + 1.65 * QC_STDDEV["Good"]
-            return None
-
-        lab_summary['IS_Target_Strength'] = lab_summary['grade'].apply(get_fck_target)
-
-        # Filter out any grades for which target strength couldn't be calculated
-        comparison_df = lab_summary.dropna(subset=['IS_Target_Strength']).copy()
-
-        if comparison_df.empty:
-             st.warning("No matching grades found between lab data and IS code definitions to perform comparison.", icon="⚠️")
-             return
-
-        # 3. Calculate Error Metrics
-        comparison_df['Error (MPa)'] = comparison_df['IS_Target_Strength'] - comparison_df['Lab_28_Day_Avg']
-        mae = comparison_df['Error (MPa)'].abs().mean()
-        rmse = np.sqrt((comparison_df['Error (MPa)']**2).mean())
-        bias = comparison_df['Error (MPa)'].mean()
-
-        st.subheader("Summary Error Metrics (IS Target vs. Lab 28-Day)")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Mean Absolute Error (MAE)", f"{mae:.2f} MPa", help="The average absolute difference between target and actual strength.")
-        m2.metric("Root Mean Squared Error (RMSE)", f"{rmse:.2f} MPa", help="A measure of the magnitude of errors; sensitive to large errors.")
-        m3.metric("Mean Bias", f"{bias:.2f} MPa", help="Positive value means the IS target is, on average, higher than the achieved lab strength.")
-        st.markdown("---")
-
-
-        # 4. Plot Comparison Chart
-        st.subheader("Comparison Plot: IS Target vs. Lab Average Strengths")
-
-        plot_df = comparison_df.set_index('grade')
-        fig, ax = plt.subplots(figsize=(12, 7))
-
-        bar_width = 0.25
-        index = np.arange(len(plot_df.index))
-
-        bar1 = ax.bar(index - bar_width, plot_df['IS_Target_Strength'], bar_width, label='CivilGPT IS Target (f\'ck)', color='#1f77b4')
-        bar2 = ax.bar(index, plot_df['Lab_28_Day_Avg'], bar_width, label='Lab 28-Day Strength (Avg)', color='#2ca02c')
-        bar3 = ax.bar(index + bar_width, plot_df['Lab_7_Day_Avg'], bar_width, label='Lab 7-Day Strength (Avg)', color='#ff7f0e', alpha=0.7)
-
-        ax.set_xlabel('Concrete Grade')
-        ax.set_ylabel('Compressive Strength (MPa)')
-        ax.set_title('IS Target Strength vs. Actual Lab Results')
-        ax.set_xticks(index)
-        ax.set_xticklabels(plot_df.index, rotation=45)
-        ax.legend()
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-        # Add labels on top of the bars
-        for bar in [bar1, bar2, bar3]:
-            ax.bar_label(bar, fmt='%.1f', padding=3)
-
-        fig.tight_layout()
-        st.pyplot(fig)
-        st.markdown("---")
-
-        # 5. Display Data Table
-        st.subheader("Detailed Comparison Data")
-        st.dataframe(comparison_df.style.format({
-            'Lab_7_Day_Avg': '{:.2f}',
-            'Lab_28_Day_Avg': '{:.2f}',
-            'IS_Target_Strength': '{:.2f}',
-            'Error (MPa)': '{:+.2f}'
-        }), use_container_width=True)
-
-    except Exception as e:
-        st.error(f"An error occurred during the calibration comparison analysis: {e}", icon="💥")
-        st.code(traceback.format_exc())
-
 # ==============================================================================
 # PART 2: CORE MIX LOGIC (UPDATED)
 # ==============================================================================
@@ -496,7 +303,7 @@ def evaluate_mix(components_dict, emissions_df, costs_df=None):
     emissions_df = emissions_df.copy()
     emissions_df["Material_norm"] = emissions_df["Material"].str.strip().str.lower()
     df = comp_df.merge(emissions_df[["Material_norm","CO2_Factor(kg_CO2_per_kg)"]],
-                                       on="Material_norm", how="left")
+                               on="Material_norm", how="left")
     if "CO2_Factor(kg_CO2_per_kg)" not in df.columns:
         df["CO2_Factor(kg_CO2_per_kg)"] = 0.0
     df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
@@ -1079,15 +886,14 @@ if st.session_state.get('run_generation', False):
             st.success(f"Successfully generated mix designs for **{inputs['grade']}** concrete in **{inputs['exposure']}** conditions.", icon="✅")
 
             # --- Results Display ---
-            tab1, tab2, tab3, tab_pareto, tab4, tab5, tab6, tab_calib_compare = st.tabs([
+            tab1, tab2, tab3, tab_pareto, tab4, tab5, tab6 = st.tabs([
                 "📊 **Overview**",
                 "🌱 **Optimized Mix**",
                 "🏗️ **Baseline Mix**",
                 "⚖️ **Trade-off Explorer (Pareto Front)**",
                 "📋 **QA/QC & Gradation**",
                 "📥 **Downloads & Reports**",
-                "🔬 **Lab Calibration**",
-                "📐 **Calibration Comparison**"
+                "🔬 **Lab Calibration**"
             ])
 
             # -- Overview Tab --
@@ -1406,7 +1212,7 @@ if st.session_state.get('run_generation', False):
                     st.download_button("✔️ Optimized Mix (CSV)", data=opt_df.to_csv(index=False).encode("utf-8"), file_name="optimized_mix.csv", mime="text/csv", use_container_width=True)
                     st.download_button("✖️ Baseline Mix (CSV)", data=base_df.to_csv(index=False).encode("utf-8"), file_name="baseline_mix.csv", mime="text/csv", use_container_width=True)
 
-            # -- Lab Calibration Tab (from Upload) --
+            # -- NEW: Lab Calibration Tab --
             with tab6:
                 st.header("🔬 Lab Calibration Analysis")
                 if lab_csv is not None:
@@ -1457,11 +1263,6 @@ if st.session_state.get('run_generation', False):
                         icon="ℹ️"
                     )
 
-            # -- NEW: Calibration Comparison Tab (from Repo Data) --
-            with tab_calib_compare:
-                display_calibration_comparison_tab()
-
-
     except Exception as e:
         st.error(f"An unexpected error occurred: {e}", icon="💥")
         st.code(traceback.format_exc())
@@ -1480,3 +1281,4 @@ elif not st.session_state.get('clarification_needed'):
     3.  **Sustainability Optimization**: It then calculates the embodied carbon (CO₂e) and cost for every compliant mix.
     4.  **Best Mix Selection**: Finally, it presents the mix with the lowest carbon footprint (or cost) alongside a standard OPC baseline for comparison.
     """)
+
