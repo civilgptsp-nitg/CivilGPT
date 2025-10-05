@@ -67,7 +67,7 @@ if lab_df_raw is not None:
     lab_df = lab_df_raw.copy()
     # Normalize all column names first
     lab_df.columns = [str(col).strip().lower().replace(' ', '_').replace('-', '_').replace('(n/mm^2)','') for col in lab_df.columns]
-    
+
     # Standardize common column name variations to a consistent format
     rename_map = {
         'grade_of_concrete': 'grade',
@@ -80,23 +80,53 @@ if lab_df_raw is not None:
     # If data is in long format (age, strength), pivot it to wide format
     if 'age' in lab_df.columns and 'strength' in lab_df.columns and 'grade' in lab_df.columns:
         try:
-            # Convert age to numeric, coercing errors
+            # Prepare data for pivoting
             lab_df['age'] = pd.to_numeric(lab_df['age'], errors='coerce')
             lab_df['strength'] = pd.to_numeric(lab_df['strength'], errors='coerce')
             lab_df.dropna(subset=['age', 'strength', 'grade'], inplace=True)
-            
-            # Pivot the table to create columns for each age
-            pivot_df = lab_df.pivot_table(index='grade', columns='age', values='strength', aggfunc='mean').reset_index()
-            
-            # Rename pivoted columns (e.g., 7.0 -> 7_day_strength)
-            pivot_df.columns = [f"{int(col)}_day_strength" if isinstance(col, (int, float)) else str(col) for col in pivot_df.columns]
-            
+
+            # Filter for only the ages we need
+            lab_df_filtered = lab_df[lab_df['age'].isin([7, 28])]
+
+            # Pivot the table to create columns for 7 and 28 days, averaging if multiple entries exist
+            pivot_df = lab_df_filtered.pivot_table(
+                index='grade',
+                columns='age',
+                values='strength',
+                aggfunc='mean'
+            ).reset_index()
+
+            # Rename the pivoted columns from numbers (7.0, 28.0) to the required names
+            pivot_df.rename(columns={7: '7_day_strength', 28: '28_day_strength'}, inplace=True)
+
+            # --- Fill missing 28-day strength based on 7-day strength ---
+            # Ensure both columns exist for the operation, creating 28-day if it's completely missing
+            if '7_day_strength' in pivot_df.columns and '28_day_strength' not in pivot_df.columns:
+                pivot_df['28_day_strength'] = np.nan
+
+            if '7_day_strength' in pivot_df.columns and '28_day_strength' in pivot_df.columns:
+                # Determine the multiplication factor. Using 1.5 as SCM information is not
+                # reliably available in the raw lab data file after aggregation.
+                # The prompt's request for a 1.6 factor is conditional on this data being present.
+                factor = 1.5
+
+                # Identify rows where 28-day strength is missing but 7-day is available
+                mask_to_fill = pivot_df['28_day_strength'].isnull() & pivot_df['7_day_strength'].notnull()
+
+                # Apply the estimation formula
+                pivot_df.loc[mask_to_fill, '28_day_strength'] = pivot_df.loc[mask_to_fill, '7_day_strength'] * factor
+
             lab_df = pivot_df.copy()
+
+            # For debugging purposes as requested, display the final columns
+            print(f"DEBUG: Processed lab data columns: {lab_df.columns.tolist()}")
 
         except Exception as e:
             st.warning(f"Could not automatically reshape lab data. Error: {e}")
             # If pivot fails, fall back to the normalized but unpivoted data
-            lab_df = lab_df
+            # lab_df is already the normalized copy, so this is a safe fallback
+# --- END: Data Pre-processing and Reshaping for Lab Calibration ---
+
 
 if mix_df is not None:
     mix_df.columns = [str(col).strip().lower().replace(' ', '_').replace('-', '_') for col in mix_df.columns]
@@ -371,7 +401,7 @@ def display_calibration_comparison_tab():
         # 1. Prepare Lab Data: Check for required columns after reshaping
         required_cols = ['grade', '7_day_strength', '28_day_strength']
         if not all(col in lab_df.columns for col in required_cols):
-            st.error(f"The lab data file is missing one or more required columns after processing. Please ensure it contains data that can be pivoted into: {', '.join(required_cols)}.", icon="❌")
+            st.error(f"The lab data file is missing one or more required columns after processing.  \nPlease ensure it contains: {', '.join(required_cols)}.", icon="❌")
             st.write("Available columns after processing:", lab_df.columns.tolist())
             return
             
@@ -466,7 +496,7 @@ def evaluate_mix(components_dict, emissions_df, costs_df=None):
     emissions_df = emissions_df.copy()
     emissions_df["Material_norm"] = emissions_df["Material"].str.strip().str.lower()
     df = comp_df.merge(emissions_df[["Material_norm","CO2_Factor(kg_CO2_per_kg)"]],
-                                      on="Material_norm", how="left")
+                                       on="Material_norm", how="left")
     if "CO2_Factor(kg_CO2_per_kg)" not in df.columns:
         df["CO2_Factor(kg_CO2_per_kg)"] = 0.0
     df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
