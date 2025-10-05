@@ -6,7 +6,7 @@
 # v2.3 - Added developer calibration panel to tune optimizer search parameters.
 # v2.4 - Added Lab Calibration Dataset Upload + Error Analysis feature.
 # v2.5 - Integrated Material Library, Binder Range Checks, Judge Prompts, and Calculation Walkthrough.
-# v2.6 (internal) - Added Calibration Comparison tab and fixed KeyError on data load.
+# v2.7 (internal) - Added 28-day strength estimation from 7-day data.
 
 import streamlit as st
 import pandas as pd
@@ -59,13 +59,37 @@ def safe_load_excel(name):
 lab_df = safe_load_excel(LAB_FILE)
 mix_df = safe_load_excel(MIX_FILE)
 
-# --- FIX: Normalize column names after loading to prevent KeyErrors ---
+# Normalize column names after loading to prevent KeyErrors
 if lab_df is not None:
     lab_df.columns = [str(col).strip().lower().replace(' ', '_').replace('-', '_') for col in lab_df.columns]
 
 if mix_df is not None:
     mix_df.columns = [str(col).strip().lower().replace(' ', '_').replace('-', '_') for col in mix_df.columns]
-# --- END FIX ---
+
+    # --- START: Estimate 28-day strength from 7-day strength where missing ---
+    # This logic applies a common estimation formula to fill in missing 28-day strength data
+    # using available 7-day data, applying a different factor for mixes with SCMs (GGBS/Fly Ash).
+    if '7_day_strength' in mix_df.columns and '28_day_strength' in mix_df.columns:
+        # Ensure strength columns are numeric, converting errors to missing values (NaN)
+        mix_df['7_day_strength'] = pd.to_numeric(mix_df['7_day_strength'], errors='coerce')
+        mix_df['28_day_strength'] = pd.to_numeric(mix_df['28_day_strength'], errors='coerce')
+
+        # To handle datasets without composition, default SCM columns to 0 if they don't exist.
+        if 'ggbs' not in mix_df.columns: mix_df['ggbs'] = 0
+        if 'fly_ash' not in mix_df.columns: mix_df['fly_ash'] = 0
+        mix_df['ggbs'] = pd.to_numeric(mix_df['ggbs'], errors='coerce').fillna(0)
+        mix_df['fly_ash'] = pd.to_numeric(mix_df['fly_ash'], errors='coerce').fillna(0)
+
+
+        # Determine the multiplication factor: 1.6 for SCM mixes, 1.5 for plain OPC (vectorized)
+        factor = np.where((mix_df['ggbs'] > 0) | (mix_df['fly_ash'] > 0), 1.6, 1.5)
+
+        # Identify rows where 28-day strength is missing but 7-day strength is available
+        mask_to_fill = mix_df['28_day_strength'].isnull() & mix_df['7_day_strength'].notnull()
+
+        # Apply the vectorized calculation to fill only the missing values
+        mix_df.loc[mask_to_fill, '28_day_strength'] = mix_df.loc[mask_to_fill, '7_day_strength'] * factor
+    # --- END: Strength Estimation ---
 
 
 # --- IS Code Rules & Tables (IS 456 & IS 10262) ---
