@@ -1071,9 +1071,9 @@ if st.session_state.get('run_generation', False):
 
                             # All feasible candidate mixes
                             ax.scatter(feasible_mixes["cost"], feasible_mixes["co2"], color='grey', alpha=0.5, label='All Feasible Mixes', zorder=1)
-                            # FIX: Use a higher zorder and thicker line to ensure the Pareto front is clearly visible on top of the scatter points.
-                            # Pareto front mixes
-                            ax.plot(pareto_df["cost"], pareto_df["co2"], '-o', color='blue', label='Pareto Front (Efficient Mixes)', linewidth=2, zorder=2)
+                            # FIX: Explicitly sort the Pareto data by cost before plotting and use a higher zorder. This ensures the line connects points correctly from left-to-right and is drawn visibly on top of the other data points.
+                            pareto_df_sorted = pareto_df.sort_values(by="cost")
+                            ax.plot(pareto_df_sorted["cost"], pareto_df_sorted["co2"], '-o', color='blue', label='Pareto Front (Efficient Mixes)', linewidth=2, zorder=2)
                             # Primary optimized mix (the one with lowest CO2 or Cost)
                             # BUG FIX: The 'optimize_for' variable is only defined in manual mode.
                             # This recreates it based on the 'optimize_cost' boolean from the final inputs.
