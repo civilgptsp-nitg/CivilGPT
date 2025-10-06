@@ -104,7 +104,7 @@ def simple_parse(text: str) -> dict:
     if grade_match: result["grade"] = "M" + grade_match.group(1)
     for exp in EXPOSURE_WB_LIMITS.keys():
         if re.search(exp, text, re.IGNORECASE): result["exposure"] = exp; break
-    # Regex now requires the word "slump" to avoid ambiguity.
+    # FIX: Regex now requires the word "slump" to avoid ambiguity with aggregate size.
     slump_match = re.search(r"slump\s*(?:of\s*)?(\d{2,3})\s*mm", text, re.IGNORECASE)
     if slump_match: result["slump"] = int(slump_match.group(1))
     # Restricted cement to OPC 43 only.
@@ -112,8 +112,7 @@ def simple_parse(text: str) -> dict:
     for ctype in cement_types:
         if re.search(ctype.replace(" ", r"\s*"), text, re.IGNORECASE):
             result["cement"] = ctype; break
-    # FIX: Regex now requires a keyword like "aggregate" or "agg" to avoid ambiguity.
-    nom_match = re.search(r"(?:aggregate|agg|nominal)\D*?(\d{2}(?:\.5)?)\s*mm", text, re.IGNORECASE)
+    nom_match = re.search(r"(\d{2}(\.5)?)\s*mm", text, re.IGNORECASE)
     if nom_match:
         try: result["nom_max"] = float(nom_match.group(1))
         except: pass
