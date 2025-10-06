@@ -104,8 +104,9 @@ def simple_parse(text: str) -> dict:
     if grade_match: result["grade"] = "M" + grade_match.group(1)
     for exp in EXPOSURE_WB_LIMITS.keys():
         if re.search(exp, text, re.IGNORECASE): result["exposure"] = exp; break
-    slump_match = re.search(r"(slump\s*(of\s*)?|)\b(\d{2,3})\s*mm", text, re.IGNORECASE)
-    if slump_match: result["slump"] = int(slump_match.group(3))
+    # FIX: Regex now requires the word "slump" to avoid ambiguity with aggregate size.
+    slump_match = re.search(r"slump\s*(?:of\s*)?(\d{2,3})\s*mm", text, re.IGNORECASE)
+    if slump_match: result["slump"] = int(slump_match.group(1))
     # Restricted cement to OPC 43 only.
     cement_types = ["OPC 43"]
     for ctype in cement_types:
@@ -303,7 +304,7 @@ def evaluate_mix(components_dict, emissions_df, costs_df=None):
     emissions_df = emissions_df.copy()
     emissions_df["Material_norm"] = emissions_df["Material"].str.strip().str.lower()
     df = comp_df.merge(emissions_df[["Material_norm","CO2_Factor(kg_CO2_per_kg)"]],
-                               on="Material_norm", how="left")
+                                      on="Material_norm", how="left")
     if "CO2_Factor(kg_CO2_per_kg)" not in df.columns:
         df["CO2_Factor(kg_CO2_per_kg)"] = 0.0
     df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
@@ -1281,4 +1282,3 @@ elif not st.session_state.get('clarification_needed'):
     3.  **Sustainability Optimization**: It then calculates the embodied carbon (CO₂e) and cost for every compliant mix.
     4.  **Best Mix Selection**: Finally, it presents the mix with the lowest carbon footprint (or cost) alongside a standard OPC baseline for comparison.
     """)
-
