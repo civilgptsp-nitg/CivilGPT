@@ -208,8 +208,8 @@ def pareto_front(df, x_col="cost", y_col="co2"):
 
 
 def water_for_slump_and_shape(nom_max_mm: int, slump_mm: int,
-                                agg_shape: str, uses_sp: bool=False,
-                                sp_reduction_frac: float=0.0) -> float:
+                              agg_shape: str, uses_sp: bool=False,
+                              sp_reduction_frac: float=0.0) -> float:
     base = WATER_BASELINE.get(int(nom_max_mm), 186.0)
     # IS 10262: Increase water by ~3% for every 25mm slump increase over 50mm
     if slump_mm <= 50: water = base
@@ -1071,14 +1071,18 @@ if st.session_state.get('run_generation', False):
 
                             # All feasible candidate mixes
                             ax.scatter(feasible_mixes["cost"], feasible_mixes["co2"], color='grey', alpha=0.5, label='All Feasible Mixes', zorder=1)
-                            # FIX: Explicitly sort the Pareto data by cost before plotting and use a higher zorder. This ensures the line connects points correctly from left-to-right and is drawn visibly on top of the other data points.
+                            
+                            # BUG FIX: Explicitly sort the Pareto data by cost before plotting the line.
+                            # This ensures the line connects points correctly from left-to-right.
                             pareto_df_sorted = pareto_df.sort_values(by="cost")
                             ax.plot(pareto_df_sorted["cost"], pareto_df_sorted["co2"], '-o', color='blue', label='Pareto Front (Efficient Mixes)', linewidth=2, zorder=2)
+                            
                             # Primary optimized mix (the one with lowest CO2 or Cost)
                             # BUG FIX: The 'optimize_for' variable is only defined in manual mode.
                             # This recreates it based on the 'optimize_cost' boolean from the final inputs.
-                            optimize_for = "Lowest Cost" if inputs['optimize_cost'] else "Lowest CO₂"
-                            ax.plot(opt_meta['cost_total'], opt_meta['co2_total'], '*', markersize=15, color='red', label=f'Chosen Mix (Lowest {optimize_for.split(" ")[1]})', zorder=3)
+                            optimize_for_label = "Lowest Cost" if inputs['optimize_cost'] else "Lowest CO₂"
+                            ax.plot(opt_meta['cost_total'], opt_meta['co2_total'], '*', markersize=15, color='red', label=f'Chosen Mix ({optimize_for_label})', zorder=3)
+                            
                             # Best compromise mix from slider
                             ax.plot(best_compromise_mix['cost'], best_compromise_mix['co2'], 'D', markersize=10, color='green', label='Best Compromise (from slider)', zorder=3)
 
