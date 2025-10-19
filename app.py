@@ -1239,16 +1239,17 @@ if 'results' in st.session_state and st.session_state.results["success"]:
 
                 # --- START OF MODIFICATION ---
                 
-                # Helper function for styling the 'feasible' column
+                # Helper function for styling the 'feasible' column.
+                # It sets background and text color for contrast in both light and dark themes.
                 def style_feasible_cell(v):
                     if v:
-                        # Feasible: Light green bg, dark green text, centered
+                        # Feasible: Light green background, dark green text, centered.
                         return 'background-color: #e8f5e9; color: #155724; text-align: center;'
                     else:
-                        # Not Feasible: Light red bg, dark red text, centered
+                        # Not Feasible: Light red background, dark red text, centered.
                         return 'background-color: #ffebee; color: #721c24; text-align: center;'
                 
-                # Apply both styling (bg/text color) and formatting (icon)
+                # Chain the style application (.apply) and the icon formatting (.format)
                 st.dataframe(
                     trace_df.style
                         .apply(lambda s: [style_feasible_cell(v) for v in s], subset=['feasible'])
