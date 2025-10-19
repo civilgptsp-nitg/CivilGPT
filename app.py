@@ -6,6 +6,7 @@
 # v2.3 - Added developer calibration panel to tune optimizer search parameters.
 # v2.4 - Added Lab Calibration Dataset Upload + Error Analysis feature.
 # v2.5 - Integrated Material Library, Binder Range Checks, Judge Prompts, and Calculation Walkthrough.
+# v2.6 (Mod) - Integrated LightGBM Strength Prediction Model
 
 import streamlit as st
 import pandas as pd
@@ -20,6 +21,14 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
+
+# --- START: LGBM & ML Imports ---
+import joblib
+from lightgbm import LGBMRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error
+# --- END: LGBM & ML Imports ---
+
 
 # ==============================================================================
 # PART 1: BACKEND LOGIC (CORRECTED & ENHANCED)
@@ -57,6 +66,22 @@ def safe_load_excel(name):
 
 lab_df = safe_load_excel(LAB_FILE)
 mix_df = safe_load_excel(MIX_FILE)
+
+# --- START: LGBM Model Loading ---
+STRENGTH_MODEL_PATH = "data/strength_model.pkl"
+def load_strength_model(path):
+    """Loads the trained LightGBM model from disk if it exists."""
+    if os.path.exists(path):
+        try:
+            return joblib.load(path)
+        except Exception as e:
+            st.error(f"Error loading strength model: {e}", icon="💥")
+            return None
+    return None
+
+# Load the model once at startup
+strength_model_global = load_strength_model(STRENGTH_MODEL_PATH)
+# --- END: LGBM Model Loading ---
 
 
 # --- IS Code Rules & Tables (IS 456 & IS 10262) ---
@@ -211,8 +236,8 @@ def pareto_front(df, x_col="cost", y_col="co2"):
 
 
 def water_for_slump_and_shape(nom_max_mm: int, slump_mm: int,
-                                agg_shape: str, uses_sp: bool=False,
-                                sp_reduction_frac: float=0.0) -> float:
+                            agg_shape: str, uses_sp: bool=False,
+                            sp_reduction_frac: float=0.0) -> float:
     base = WATER_BASELINE.get(int(nom_max_mm), 186.0)
     # IS 10262: Increase water by ~3% for every 25mm slump increase over 50mm
     if slump_mm <= 50: water = base
@@ -494,7 +519,10 @@ def sieve_check_ca(df: pd.DataFrame, nominal_mm: int):
     except: return False, ["Invalid coarse aggregate CSV format. Ensure 'Sieve_mm' and 'PercentPassing' columns exist."]
 
 # Calibration overrides added: wb_min, wb_steps, max_flyash_frac, max_ggbs_frac, scm_step, fine_fraction_override
-def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, emissions, costs, cement_choice, material_props, use_sp=True, sp_reduction=0.18, optimize_cost=False, wb_min=0.35, wb_steps=6, max_flyash_frac=0.3, max_ggbs_frac=0.5, scm_step=0.1, fine_fraction_override=None):
+# --- START: LGBM MODIFICATION ---
+# Added fck_target and use_lgbm_predictor parameters to the function signature
+def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, emissions, costs, cement_choice, material_props, fck_target, use_lgbm_predictor, use_sp=True, sp_reduction=0.18, optimize_cost=False, wb_min=0.35, wb_steps=6, max_flyash_frac=0.3, max_ggbs_frac=0.5, scm_step=0.1, fine_fraction_override=None):
+# --- END: LGBM MODIFICATION ---
     w_b_limit, min_cem_exp = float(EXPOSURE_WB_LIMITS[exposure]), float(EXPOSURE_MIN_CEMENT[exposure])
     target_water = water_for_slump_and_shape(nom_max_mm=nom_max, slump_mm=int(target_slump), agg_shape=agg_shape, uses_sp=use_sp, sp_reduction_frac=sp_reduction)
     best_df, best_meta, best_score = None, None, float("inf")
@@ -555,6 +583,47 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, e
 
                 # Use the actual_wb for reporting and compliance checks
                 candidate_meta = {"w_b": actual_wb, "cementitious": binder, "cement": cement, "flyash": flyash, "ggbs": ggbs, "water_target": target_water, "water_final": water_final, "sp": sp, "fine": fine_wet, "coarse": coarse_wet, "scm_total_frac": flyash_frac + ggbs_frac, "grade": grade, "exposure": exposure, "nom_max": nom_max, "slump": target_slump, "co2_total": co2_total, "cost_total": cost_total, "coarse_agg_fraction": coarse_agg_frac, "binder_range": (min_b_grade, max_b_grade), "material_props": material_props}
+                
+                # --- START: LGBM Strength Prediction Filter ---
+                # This filter runs *before* the IS-code feasibility checks.
+                if strength_model_global is not None and use_lgbm_predictor:
+                    try:
+                        # Features must be in the exact order the model was trained on:
+                        # ["cement", "flyash", "ggbs", "water_final", "sp", "fine", "coarse", "w_b"]
+                        X_pred = [[
+                            candidate_meta["cement"],
+                            candidate_meta["flyash"],
+                            candidate_meta["ggbs"],
+                            candidate_meta["water_final"],
+                            candidate_meta["sp"],
+                            candidate_meta["fine"],
+                            candidate_meta["coarse"],
+                            candidate_meta["w_b"]
+                        ]]
+                        
+                        strength_pred = strength_model_global.predict(X_pred)[0]
+                        
+                        # If predicted strength is less than the target, skip this mix candidate
+                        if strength_pred < fck_target:
+                            # Add to trace as a failure reason
+                            trace_reason = f"LGBM predicted strength {strength_pred:.1f} MPa < {fck_target:.1f} MPa"
+                            trace.append({
+                                "wb": float(actual_wb), "flyash_frac": float(flyash_frac), "ggbs_frac": float(ggbs_frac),
+                                "co2": float(co2_total), "cost": float(cost_total), "score": float(co2_total if not optimize_cost else cost_total),
+                                "feasible": False, "reasons": trace_reason
+                            })
+                            continue # Skip to the next mix
+                    
+                    except Exception as e:
+                        # If prediction fails, log it and treat as a failure
+                        trace_reason = f"LGBM prediction error: {e}"
+                        trace.append({
+                            "wb": float(actual_wb), "flyash_frac": float(flyash_frac), "ggbs_frac": float(ggbs_frac),
+                            "co2": float(co2_total), "cost": float(cost_total), "score": float(co2_total if not optimize_cost else cost_total),
+                            "feasible": False, "reasons": trace_reason
+                        })
+                        continue # Skip to the next mix
+                # --- END: LGBM Strength Prediction Filter ---
                 
                 # --- START OF MODIFICATION: Call both feasibility checks ---
                 
@@ -795,6 +864,22 @@ else: # Default values when manual mode is off
     emissions_file, cost_file, materials_file = None, None, None # Ensure materials_file is None
     use_llm_parser = False
 
+# --- START: LGBM UI ---
+st.sidebar.markdown("---")
+with st.sidebar.expander("🤖 Strength Model (LGBM)"):
+    use_lgbm_predictor = st.checkbox(
+        "Use LightGBM Strength Predictor (if trained)",
+        # Auto-check the box if a model is loaded, otherwise default to False
+        value=(strength_model_global is not None),
+        help="If checked, the optimizer will only select mixes that the ML model predicts will meet the target strength."
+    )
+    st.markdown("---")
+    st.markdown("###### Train New Model")
+    st.info("Upload a CSV with **actual lab results** to train the strength predictor. Required columns: `cement`, `flyash`, `ggbs`, `water_final`, `sp`, `fine`, `coarse`, `actual_strength`, `w_b`")
+    lgbm_train_csv = st.file_uploader("Upload Lab Results CSV", type=["csv"], key="lgbm_train_csv")
+    train_lgbm_button = st.button("Train Strength Model", use_container_width=True)
+# --- END: LGBM UI ---
+
 # NEW: Calibration controls, always visible
 with st.sidebar.expander("Calibration & Tuning (Developer)"):
     enable_calibration_overrides = st.checkbox("Enable calibration overrides", False, help="Override default optimizer search parameters with the values below.")
@@ -808,6 +893,76 @@ with st.sidebar.expander("Calibration & Tuning (Developer)"):
 
 # Load datasets
 materials_df, emissions_df, costs_df = load_data(materials_file, emissions_file, cost_file)
+
+# --- START: LGBM Training Logic ---
+# This logic runs when the "Train Strength Model" button is pressed
+if train_lgbm_button:
+    if lgbm_train_csv is not None:
+        try:
+            train_df = pd.read_csv(lgbm_train_csv)
+            # Define required columns for training
+            REQUIRED_COLS = [
+                "cement", "flyash", "ggbs", "water_final", "sp",
+                "fine", "coarse", "actual_strength", "w_b"
+            ]
+            # Define feature columns
+            FEATURE_COLS = [
+                "cement", "flyash", "ggbs", "water_final", "sp",
+                "fine", "coarse", "w_b"
+            ]
+            TARGET_COL = "actual_strength"
+            
+            missing_cols = [col for col in REQUIRED_COLS if col not in train_df.columns]
+            
+            if missing_cols:
+                st.sidebar.error(f"CSV is missing columns: {', '.join(missing_cols)}")
+            elif len(train_df) < 10:
+                st.sidebar.warning(f"Need at least 10 rows for training. Found {len(train_df)}.")
+            else:
+                with st.spinner("Training LightGBM model..."):
+                    # Prepare data
+                    train_df = train_df.dropna(subset=REQUIRED_COLS)
+                    
+                    # Create 80/20 split for metrics validation
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        train_df[FEATURE_COLS], train_df[TARGET_COL], test_size=0.2, random_state=42
+                    )
+                    
+                    # Train a temporary model *only on the training split* to get a validation MAE
+                    model_val = LGBMRegressor(n_estimators=300, learning_rate=0.05, max_depth=6, random_state=42)
+                    model_val.fit(X_train, y_train)
+                    y_pred = model_val.predict(X_test)
+                    mae = mean_absolute_error(y_test, y_pred)
+                    
+                    # --- Final Model Training ---
+                    # Train the *final* model on the *entire* dataset for maximum accuracy
+                    model_final = LGBMRegressor(n_estimators=300, learning_rate=0.05, max_depth=6, random_state=42)
+                    model_final.fit(train_df[FEATURE_COLS], train_df[TARGET_COL]) # Train on full dataset
+                    
+                    # Save the model
+                    os.makedirs("data", exist_ok=True) # Ensure 'data' directory exists
+                    joblib.dump(model_final, STRENGTH_MODEL_PATH)
+                    
+                    # Update the globally loaded model variable
+                    strength_model_global = model_final
+                    
+                    # Feature importances from the *final* model
+                    importances = pd.DataFrame({
+                        'feature': FEATURE_COLS,
+                        'importance': model_final.feature_importances_
+                    }).sort_values('importance', ascending=False).reset_index(drop=True)
+                    
+                    st.sidebar.success(f"Model trained and saved! (Val MAE: {mae:.2f} MPa)")
+                    st.sidebar.dataframe(importances)
+                    
+                    # Rerun to update the app state, especially the "Use LGBM" checkbox
+                    st.rerun()
+
+        except Exception as e:
+            st.sidebar.error(f"Training failed: {e}")
+    else:
+        st.sidebar.warning("Please upload a CSV file to train the model.")
+# --- END: LGBM Training Logic ---
 
 
 # --- Main Execution Block ---
@@ -943,14 +1098,21 @@ if st.session_state.get('run_generation', False):
         with st.spinner("⚙️ Running IS-code calculations and optimizing for sustainability..."):
             fck, S = GRADE_STRENGTH[inputs["grade"]], QC_STDDEV[inputs.get("qc_level", "Good")]
             fck_target = fck + 1.65 * S
+            
+            # --- START: LGBM MODIFICATION ---
+            # Pass fck_target and the checkbox value to generate_mix
             opt_df, opt_meta, trace = generate_mix(
                 inputs["grade"], inputs["exposure"], inputs["nom_max"],
                 inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"],
                 emissions_df, costs_df, inputs["cement_choice"],
                 material_props=inputs["material_props"],
+                fck_target=fck_target,               # <-- NEW ARG
+                use_lgbm_predictor=use_lgbm_predictor, # <-- NEW ARG
                 use_sp=inputs["use_sp"], optimize_cost=inputs["optimize_cost"],
                 **calibration_kwargs
             )
+            # --- END: LGBM MODIFICATION ---
+            
             base_df, base_meta = generate_baseline(
                 inputs["grade"], inputs["exposure"], inputs["nom_max"],
                 inputs["target_slump"], inputs["agg_shape"], inputs["fine_zone"],
