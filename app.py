@@ -92,9 +92,9 @@ FINE_AGG_ZONE_LIMITS = {
 }
 
 COARSE_LIMITS = {
-    10: {"20.0": (100,100), "10.0": (85,100),  "4.75": (0,20)},
-    20: {"40.0": (95,100),  "20.0": (95,100),  "10.0": (25,55), "4.75": (0,10)},
-    40: {"80.0": (95,100),  "40.0": (95,100),  "20.0": (30,70), "10.0": (0,15)}
+    10: {"20.0": (100,100), "10.0": (85,100),   "4.75": (0,20)},
+    20: {"40.0": (95,100),   "20.0": (95,100),   "10.0": (25,55), "4.75": (0,10)},
+    40: {"80.0": (95,100),   "40.0": (95,100),   "20.0": (30,70), "10.0": (0,15)}
 }
 
 # Parsers
@@ -211,8 +211,8 @@ def pareto_front(df, x_col="cost", y_col="co2"):
 
 
 def water_for_slump_and_shape(nom_max_mm: int, slump_mm: int,
-                            agg_shape: str, uses_sp: bool=False,
-                            sp_reduction_frac: float=0.0) -> float:
+                                agg_shape: str, uses_sp: bool=False,
+                                sp_reduction_frac: float=0.0) -> float:
     base = WATER_BASELINE.get(int(nom_max_mm), 186.0)
     # IS 10262: Increase water by ~3% for every 25mm slump increase over 50mm
     if slump_mm <= 50: water = base
@@ -307,7 +307,7 @@ def evaluate_mix(components_dict, emissions_df, costs_df=None):
     emissions_df = emissions_df.copy()
     emissions_df["Material_norm"] = emissions_df["Material"].str.strip().str.lower()
     df = comp_df.merge(emissions_df[["Material_norm","CO2_Factor(kg_CO2_per_kg)"]],
-                                       on="Material_norm", how="left")
+                                        on="Material_norm", how="left")
     if "CO2_Factor(kg_CO2_per_kg)" not in df.columns:
         df["CO2_Factor(kg_CO2_per_kg)"] = 0.0
     df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
@@ -795,23 +795,6 @@ else: # Default values when manual mode is off
     emissions_file, cost_file, materials_file = None, None, None # Ensure materials_file is None
     use_llm_parser = False
 
-# NEW: Judge Demo Prompts
-with st.sidebar.expander("🎭 Judge Demo Prompts"):
-    prompt1 = "M30 slab, moderate exposure, OPC+Fly Ash"
-    if st.button(prompt1, use_container_width=True):
-        st.session_state.user_text_input = prompt1
-        st.rerun()
-
-    prompt2 = "M40 pumped concrete, severe exposure, GGBS, slump 150 mm"
-    if st.button(prompt2, use_container_width=True):
-        st.session_state.user_text_input = prompt2
-        st.rerun()
-
-    prompt3 = "good durable mix"
-    if st.button(prompt3, use_container_width=True):
-        st.session_state.user_text_input = prompt3
-        st.rerun()
-
 # NEW: Calibration controls, always visible
 with st.sidebar.expander("Calibration & Tuning (Developer)"):
     enable_calibration_overrides = st.checkbox("Enable calibration overrides", False, help="Override default optimizer search parameters with the values below.")
@@ -1066,14 +1049,6 @@ if 'results' in st.session_state and st.session_state.results["success"]:
             ax2.set_ylabel("Material Cost (₹ / m³)")
             ax2.bar_label(bars2, fmt='₹{:,.0f}')
             st.pyplot(fig2)
-
-        # NEW: Judge Explanation Expander
-        with st.expander("📝 Judge Explanation (How CivilGPT Works)"):
-            st.markdown("""
-            “CivilGPT uses strict IS-code constraints combined with a constrained optimization search to produce construction-ready, low-CO₂ concrete mixes.”
-
-            “It leverages local material properties and India-specific emission factors so recommendations are context-aware and verifiable.”
-            """)
 
     def display_mix_details(title, df, meta, exposure):
         st.header(title)
