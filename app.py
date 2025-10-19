@@ -307,7 +307,7 @@ def evaluate_mix(components_dict, emissions_df, costs_df=None):
     emissions_df = emissions_df.copy()
     emissions_df["Material_norm"] = emissions_df["Material"].str.strip().str.lower()
     df = comp_df.merge(emissions_df[["Material_norm","CO2_Factor(kg_CO2_per_kg)"]],
-                                        on="Material_norm", how="left")
+                                       on="Material_norm", how="left")
     if "CO2_Factor(kg_CO2_per_kg)" not in df.columns:
         df["CO2_Factor(kg_CO2_per_kg)"] = 0.0
     df["CO2_Factor(kg_CO2_per_kg)"] = df["CO2_Factor(kg_CO2_per_kg)"].fillna(0.0)
@@ -416,6 +416,57 @@ def check_feasibility(mix_df, meta, exposure):
     feasible = len(reasons_fail) == 0
     return feasible, reasons_fail, warnings, derived, checks
 
+# --- START OF MODIFICATION: New function for detailed trace reasons ---
+def get_compliance_reasons(mix_df, meta, exposure):
+    """
+    Checks mix compliance against IS-code rules and returns detailed reasons.
+    This logic mirrors compliance_checks() but provides richer string output for the trace.
+    """
+    reasons = []
+    
+    # 1. W/B ratio
+    try:
+        limit = EXPOSURE_WB_LIMITS[exposure]
+        used = float(meta["w_b"])
+        if used > limit:
+            reasons.append(f"Failed W/B ratio limit ({used:.3f} > {limit:.2f})")
+    except Exception:
+        reasons.append("Failed W/B ratio check (parsing error)")
+        
+    # 2. Min cementitious
+    try:
+        limit = float(EXPOSURE_MIN_CEMENT[exposure])
+        used = float(meta["cementitious"])
+        if used < limit:
+            reasons.append(f"Cementitious below minimum ({used:.1f} kg/m³ < {limit:.1f} kg/m³)")
+    except Exception:
+        reasons.append("Failed min. cementitious check (parsing error)")
+
+    # 3. SCM fraction
+    try:
+        limit = 0.50
+        used = float(meta.get("scm_total_frac", 0.0))
+        if used > limit:
+            reasons.append(f"SCM fraction exceeds limit ({used*100:.0f}% > {limit*100:.0f}%)")
+    except Exception:
+        reasons.append("Failed SCM fraction check (parsing error)")
+
+    # 4. Unit weight
+    try:
+        min_limit, max_limit = 2200.0, 2600.0
+        total_mass = float(mix_df["Quantity (kg/m3)"].sum())
+        if not (min_limit <= total_mass <= max_limit):
+            reasons.append(f"Unit weight outside range ({total_mass:.1f} kg/m³ not in {min_limit:.0f}-{max_limit:.0f} kg/m³)")
+    except Exception:
+        reasons.append("Failed unit weight check (parsing error)")
+
+    feasible = len(reasons) == 0
+    if feasible:
+        return feasible, "All IS-code checks passed."
+    else:
+        return feasible, "; ".join(reasons)
+# --- END OF MODIFICATION ---
+
 def sieve_check_fa(df: pd.DataFrame, zone: str):
     try:
         limits, ok, msgs = FINE_AGG_ZONE_LIMITS[zone], True, []
@@ -504,11 +555,35 @@ def generate_mix(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, e
 
                 # Use the actual_wb for reporting and compliance checks
                 candidate_meta = {"w_b": actual_wb, "cementitious": binder, "cement": cement, "flyash": flyash, "ggbs": ggbs, "water_target": target_water, "water_final": water_final, "sp": sp, "fine": fine_wet, "coarse": coarse_wet, "scm_total_frac": flyash_frac + ggbs_frac, "grade": grade, "exposure": exposure, "nom_max": nom_max, "slump": target_slump, "co2_total": co2_total, "cost_total": cost_total, "coarse_agg_fraction": coarse_agg_frac, "binder_range": (min_b_grade, max_b_grade), "material_props": material_props}
-                feasible, reasons_fail, _, _, _ = check_feasibility(df, candidate_meta, exposure)
+                
+                # --- START OF MODIFICATION: Call both feasibility checks ---
+                
+                # Original feasibility check for optimizer logic
+                feasible, _, _, _, _ = check_feasibility(df, candidate_meta, exposure)
+                
+                # New, detailed check for trace reporting
+                trace_feasible, trace_reasons = get_compliance_reasons(df, candidate_meta, exposure)
+                
                 score = co2_total if not optimize_cost else cost_total
-                trace.append({"wb": float(actual_wb), "flyash_frac": float(flyash_frac), "ggbs_frac": float(ggbs_frac),"co2": float(co2_total), "cost": float(cost_total),"score": float(score), "feasible": bool(feasible),"reasons": ", ".join(reasons_fail)})
+                
+                # Use the new detailed values in the trace
+                trace.append({
+                    "wb": float(actual_wb), 
+                    "flyash_frac": float(flyash_frac), 
+                    "ggbs_frac": float(ggbs_frac),
+                    "co2": float(co2_total), 
+                    "cost": float(cost_total),
+                    "score": float(score), 
+                    "feasible": bool(trace_feasible), # Use boolean from new function
+                    "reasons": str(trace_reasons)     # Use string from new function
+                })
+                
+                # Use the original feasible boolean for the optimizer's selection logic
                 if feasible and score < best_score:
                     best_df, best_score, best_meta = df.copy(), score, candidate_meta.copy()
+                
+                # --- END OF MODIFICATION ---
+                
     return best_df, best_meta, trace
 
 def generate_baseline(grade, exposure, nom_max, target_slump, agg_shape, fine_zone, emissions, costs, cement_choice, material_props, use_sp=True, sp_reduction=0.18):
@@ -1237,7 +1312,7 @@ if 'results' in st.session_state and st.session_state.results["success"]:
                 trace_df = pd.DataFrame(trace)
                 st.markdown("The table below shows every mix combination attempted by the optimizer. 'Feasible' mixes met all IS-code checks.")
 
-                # --- START OF MODIFICATION ---
+                # --- START OF MODIFICATION (Original user code, now functional) ---
                 
                 # Helper function for styling the 'feasible' column.
                 # It sets background and text color for contrast in both light and dark themes.
