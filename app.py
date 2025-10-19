@@ -1236,7 +1236,28 @@ if 'results' in st.session_state and st.session_state.results["success"]:
             if trace:
                 trace_df = pd.DataFrame(trace)
                 st.markdown("The table below shows every mix combination attempted by the optimizer. 'Feasible' mixes met all IS-code checks.")
-                st.dataframe(trace_df.style.apply(lambda s: ['background-color: #e8f5e9' if v else 'background-color: #ffebee' for v in s], subset=['feasible']), use_container_width=True)
+
+                # --- START OF MODIFICATION ---
+                
+                # Helper function for styling the 'feasible' column
+                def style_feasible_cell(v):
+                    if v:
+                        # Feasible: Light green bg, dark green text, centered
+                        return 'background-color: #e8f5e9; color: #155724; text-align: center;'
+                    else:
+                        # Not Feasible: Light red bg, dark red text, centered
+                        return 'background-color: #ffebee; color: #721c24; text-align: center;'
+                
+                # Apply both styling (bg/text color) and formatting (icon)
+                st.dataframe(
+                    trace_df.style
+                        .apply(lambda s: [style_feasible_cell(v) for v in s], subset=['feasible'])
+                        .format({"feasible": lambda v: "✅" if v else "❌"}),
+                    use_container_width=True
+                )
+                
+                # --- END OF MODIFICATION ---
+                
                 st.markdown("#### CO₂ vs. Cost of All Candidate Mixes")
                 fig, ax = plt.subplots()
                 scatter_colors = ["#4CAF50" if f else "#F44336" for f in trace_df["feasible"]]
