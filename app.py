@@ -142,6 +142,9 @@ def load_data(materials_file=None, emissions_file=None, cost_file=None):
     def _safe_read(file, default):
         if file is not None:
             try:
+                # Ensure file pointer is at the beginning if it's an uploaded file
+                if hasattr(file, 'seek'):
+                    file.seek(0)
                 return pd.read_csv(file)
             except:
                 return default
@@ -647,6 +650,8 @@ if manual_mode:
         # FIX: Implement parsing for the uploaded materials CSV
         if materials_file is not None:
             try:
+                # Ensure file pointer is at the beginning
+                materials_file.seek(0)
                 mat_df = pd.read_csv(materials_file)
                 # Normalize column names for robustness
                 mat_df.columns = [col.strip().lower().replace(" ", "") for col in mat_df.columns]
@@ -744,7 +749,7 @@ with st.sidebar.expander("Calibration & Tuning (Developer)"):
 
 
 # Load datasets
-materials_df, emissions_df, costs_df = load_data(None, emissions_file, cost_file)
+materials_df, emissions_df, costs_df = load_data(materials_file, emissions_file, cost_file)
 
 
 # --- Main Execution Block ---
@@ -1112,7 +1117,7 @@ if 'results' in st.session_state and st.session_state.results["success"]:
                     # ==========================================================
                     alpha = st.slider(
                         "Prioritize Sustainability (CO₂) ↔ Cost",
-                        min_value=0.0, max_value=1.0, value=0.5, step=0.05,
+                        min_value=0.0, max_value=1.0, value=st.session_state.get("pareto_slider_alpha", 0.5), step=0.05,
                         help="Slide towards Sustainability to prioritize low CO₂, or towards Cost to prioritize low price. The green diamond will show the best compromise on the Pareto Front for your chosen preference.",
                         key="pareto_slider_alpha" # <--- THIS IS THE FIX
                     )
@@ -1182,12 +1187,16 @@ if 'results' in st.session_state and st.session_state.results["success"]:
         with col1:
             st.subheader("Fine Aggregate Gradation")
             if fine_csv is not None:
-                df_fine = pd.read_csv(fine_csv)
-                ok_fa, msgs_fa = sieve_check_fa(df_fine, inputs.get("fine_zone", "Zone II"))
-                if ok_fa: st.success(msgs_fa[0], icon="✅")
-                else:
-                    for m in msgs_fa: st.error(m, icon="❌")
-                st.dataframe(df_fine, use_container_width=True)
+                try:
+                    fine_csv.seek(0)
+                    df_fine = pd.read_csv(fine_csv)
+                    ok_fa, msgs_fa = sieve_check_fa(df_fine, inputs.get("fine_zone", "Zone II"))
+                    if ok_fa: st.success(msgs_fa[0], icon="✅")
+                    else:
+                        for m in msgs_fa: st.error(m, icon="❌")
+                    st.dataframe(df_fine, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error processing Fine Aggregate CSV: {e}")
             else:
                 st.info("Upload a Fine Aggregate CSV in the sidebar to perform a gradation check against IS 383.", icon="ℹ️")
                 st.download_button(
@@ -1199,12 +1208,16 @@ if 'results' in st.session_state and st.session_state.results["success"]:
         with col2:
             st.subheader("Coarse Aggregate Gradation")
             if coarse_csv is not None:
-                df_coarse = pd.read_csv(coarse_csv)
-                ok_ca, msgs_ca = sieve_check_ca(df_coarse, inputs["nom_max"])
-                if ok_ca: st.success(msgs_ca[0], icon="✅")
-                else:
-                    for m in msgs_ca: st.error(m, icon="❌")
-                st.dataframe(df_coarse, use_container_width=True)
+                try:
+                    coarse_csv.seek(0)
+                    df_coarse = pd.read_csv(coarse_csv)
+                    ok_ca, msgs_ca = sieve_check_ca(df_coarse, inputs["nom_max"])
+                    if ok_ca: st.success(msgs_ca[0], icon="✅")
+                    else:
+                        for m in msgs_ca: st.error(m, icon="❌")
+                    st.dataframe(df_coarse, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error processing Coarse Aggregate CSV: {e}")
             else:
                 st.info("Upload a Coarse Aggregate CSV in the sidebar to perform a gradation check against IS 383.", icon="ℹ️")
                 st.download_button(
@@ -1246,6 +1259,7 @@ if 'results' in st.session_state and st.session_state.results["success"]:
             base_df.to_excel(writer, sheet_name="Baseline_Mix", index=False)
             pd.DataFrame([opt_meta]).T.to_excel(writer, sheet_name="Optimized_Meta")
             pd.DataFrame([base_meta]).T.to_excel(writer, sheet_name="Baseline_Meta")
+        excel_buffer.seek(0) # Rewind buffer
 
         # PDF Report
         pdf_buffer = BytesIO()
@@ -1266,11 +1280,12 @@ if 'results' in st.session_state and st.session_state.results["success"]:
         story.extend([Paragraph(f"Design for <b>{inputs['grade']} / {inputs['exposure']} Exposure</b>", styles['h2']), summary_table, Spacer(1, 0.2*inch)])
 
         # Optimized Mix Table
-        opt_data_pdf = [opt_df.columns.values.tolist()] + opt_df.values.tolist()
+        opt_data_pdf = [opt_df.columns.values.tolist()] + opt_df.applymap(lambda x: f'{x:.2f}' if isinstance(x, float) else x).values.tolist()
         opt_table = Table(opt_data_pdf, hAlign='LEFT')
         opt_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 1, colors.black), ('BACKGROUND', (0,0), (-1,0), colors.palegreen)]))
         story.extend([Paragraph("Optimized Mix Proportions (kg/m³)", styles['h2']), opt_table])
         doc.build(story)
+        pdf_buffer.seek(0) # Rewind buffer
 
         d1, d2 = st.columns(2)
         with d1:
@@ -1285,6 +1300,7 @@ if 'results' in st.session_state and st.session_state.results["success"]:
         st.header("🔬 Lab Calibration Analysis")
         if lab_csv is not None:
             try:
+                lab_csv.seek(0)
                 lab_results_df = pd.read_csv(lab_csv)
                 # Run the calibration analysis
                 comparison_df, error_metrics = run_lab_calibration(lab_results_df)
@@ -1338,6 +1354,8 @@ if 'results' in st.session_state and st.session_state.results["success"]:
 # in BLOCK 1, so we just 'pass' to prevent the welcome screen from showing.
 # ==============================================================================
 elif 'results' in st.session_state and not st.session_state.results["success"]:
+    # The error message is already shown in BLOCK 1
+    # We just need to prevent the welcome screen from appearing
     pass
 
 # ==============================================================================
