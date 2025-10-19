@@ -405,7 +405,10 @@ def sanity_check_mix(meta, df):
 
 def check_feasibility(mix_df, meta, exposure):
     checks, derived = compliance_checks(mix_df, meta, exposure)
-    warnings = sanity_check_mix(meta, df)
+    # ==========================================================
+    # BUG FIX: The variable 'df' was used here instead of 'mix_df'.
+    # ==========================================================
+    warnings = sanity_check_mix(meta, mix_df) # <--- THIS IS THE FIX
     reasons_fail = [f"IS Code Fail: {k}" for k, v in checks.items() if not v]
     feasible = len(reasons_fail) == 0
     return feasible, reasons_fail, warnings, derived, checks
