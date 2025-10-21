@@ -595,7 +595,9 @@ def generate_baseline(grade, exposure, nom_max, target_slump, agg_shape,
                       fine_zone, emissions, costs, cement_choice, material_props,
                       use_sp=True, sp_reduction=0.18):
     w_b_limit, min_cem_exp = float(EXPOSURE_WB_LIMITS[exposure]), float(EXPOSURE_MIN_CEMENT[exposure])
+    # --- BUG FIX: This line was missing ---
     water_target = water_for_slump_and_shape(nom_max_mm=nom_max, slump_mm=int(target_slump), agg_shape=agg_shape, uses_sp=use_sp, sp_reduction_frac=sp_reduction)
+    # --- END BUG FIX ---
 
     min_b_grade, max_b_grade = reasonable_binder_range(grade)
 
@@ -617,7 +619,7 @@ def generate_baseline(grade, exposure, nom_max, target_slump, agg_shape,
     # Apply moisture corrections
     water_delta_fa, fine_wet = aggregate_correction(material_props['moisture_fa'], fine_ssd)
     water_delta_ca, coarse_wet = aggregate_correction(material_props['moisture_ca'], coarse_ssd)
-    water_final = target_water - water_delta_fa - water_delta_ca
+    water_final = water_target - water_delta_fa - water_delta_ca
 
     mix = {cement_choice: cementitious, "Fly Ash": 0.0, "GGBS": 0.0, "Water": water_final, "PCE Superplasticizer": sp, "Fine Aggregate": fine_wet, "Coarse Aggregate": coarse_wet}
     df = evaluate_mix(mix, emissions, costs)
@@ -1227,7 +1229,7 @@ if 'results' in st.session_state and st.session_state.results["success"]:
                     c1, c2, c3 = st.columns(3)
                     c1.metric("💰 Cost", f"₹{best_compromise_mix['cost']:.0f} / m³")
                     c2.metric("🌱 CO₂", f"{best_compromise_mix['co2']:.1f} kg / m³")
-                    c3.metric("💧 Water/Binder Ratio", f"{best_compromise_mix['wb']:.3f}")
+                    c3.metric("💧 Water/Binder Ratio", f"{best_compromMise_mix['wb']:.3f}")
 
                 else:
                     st.info("No Pareto front could be determined from the feasible mixes.", icon="ℹ️")
